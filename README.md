@@ -99,7 +99,6 @@ kubectl get clusterrolebinding ark-hub-controller-binding
 - [规则引擎](docs/RULES_ENGINE.md) - 声明式规则系统
 - [eBPF 网络探针](docs/EBPF_NETWORK_PROBE.md) - 内核级网络监控
 - [eBPF CO-RE 实现](ark-probe-ebpf/CO-RE_IMPLEMENTATION.md) - CO-RE 四元组提取指南
-- [Kubernetes 部署](deploy/README.md) - 生产级 K8s 部署指南（含 RBAC 配置）
 - [探针开发](examples/README.md) - 如何开发自定义探针
 - [贡献指南](CONTRIBUTING.md) - 开发与提交流程
 - [安全策略](SECURITY.md) - 漏洞披露与安全注意事项
@@ -114,6 +113,20 @@ make test
 make helm-lint
 make demo
 ```
+
+### 🧪 RDMA Demo 验收
+
+```bash
+# 默认场景：PFC Storm
+bash scripts/run-demo.sh
+
+# 场景 2：物理层退化
+ARK_RDMA_MOCK_FILE=examples/mock/rdma/events-phy-degradation.jsonl bash scripts/run-demo.sh
+```
+
+说明：
+- `scripts/run-demo.sh` 会自动构建 `ark/ark-hub`，等待 Hub 就绪后再发起诊断请求。
+- 可通过 `ARK_RDMA_MOCK_FILE` 切换 mock 数据集。
 
 ## 🏗️ 架构设计
 
@@ -206,7 +219,7 @@ sequenceDiagram
 ## 📦 项目结构
 
 ```
-x-infra/
+ark-infra/
 ├── core/                # 共享底座（事件系统、状态图、规则引擎）
 │   └── src/
 │       ├── event.rs
@@ -236,7 +249,10 @@ x-infra/
 ├── examples/
 │   ├── ark-probe-nvml.py       # NVIDIA GPU 探针
 │   ├── ark-probe-network.py    # 网络探针
-│   └── ark-probe-dummy.py      # 模拟探针
+│   ├── ark-probe-dummy.py      # 模拟探针
+│   └── ark-probe-rdma-mock.py  # RDMA mock 探针
+├── scripts/
+│   └── run-demo.sh             # Hub + Agent + RDMA mock 端到端演示
 └── docs/                # 文档
 ```
 
