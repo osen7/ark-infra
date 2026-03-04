@@ -1,0 +1,43 @@
+name: "RDMA PFC Storm"
+scene: "rdma_pfc_storm"
+priority: 95
+
+conditions:
+  - type: "all"
+    conditions:
+      - type: "event"
+        event_type: "error.net"
+        entity_id_pattern: "roce-*"
+        value_pattern: "pfc_storm"
+      - type: "event"
+        event_type: "transport.drop"
+        value_threshold: 10.0
+      - type: "graph"
+        edge_type: "waits_on"
+        from_pattern: "*pid-*"
+        to_pattern: "*roce-*"
+
+root_cause_pattern:
+  primary: "PFC 风暴导致 RoCE 拥塞"
+  secondary:
+    - "交换机队列拥塞"
+    - "优先级流控异常"
+
+solution_steps:
+  - step: 1
+    action: "检查网卡 pause/pfc 计数"
+    command: "ethtool -S <iface> | egrep -i 'pfc|pause'"
+    manual: false
+  - step: 2
+    action: "检查交换机 PFC 配置与队列拥塞"
+    manual: true
+
+related_evidences:
+  - "error.net"
+  - "transport.drop"
+  - "transport.bw"
+
+applicability:
+  min_confidence: 0.85
+  required_events:
+    - "error.net"

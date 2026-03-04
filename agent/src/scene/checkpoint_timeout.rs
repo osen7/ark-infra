@@ -1,6 +1,6 @@
-use ark_core::graph::{EdgeType, StateGraph};
 use crate::scene::analyzer::SceneAnalyzer;
 use crate::scene::types::{AnalysisResult, SceneType, Severity};
+use ark_core::graph::{EdgeType, StateGraph};
 
 /// Checkpoint 超时场景分析器
 /// 检测 Checkpoint 保存或加载超时的情况
@@ -27,14 +27,17 @@ impl SceneAnalyzer for CheckpointTimeoutAnalyzer {
             if edge.from == target && edge.edge_type == EdgeType::WaitsOn {
                 if edge.to.contains("storage") || edge.to.contains("disk") {
                     checkpoint_wait = true;
-                    
+
                     // 检查存储是否慢
                     if let Some(node) = nodes.get(&edge.to) {
                         if let Some(iops) = node.metadata.get("iops") {
                             if let Ok(iops_val) = iops.parse::<f64>() {
                                 if iops_val < 50.0 {
                                     storage_slow = true;
-                                    root_causes.push(format!("存储 {} IOPS 过低: {:.0}", edge.to, iops_val));
+                                    root_causes.push(format!(
+                                        "存储 {} IOPS 过低: {:.0}",
+                                        edge.to, iops_val
+                                    ));
                                 }
                             }
                         }
@@ -58,7 +61,7 @@ impl SceneAnalyzer for CheckpointTimeoutAnalyzer {
             } else {
                 root_causes.push("Checkpoint 操作可能超时".to_string());
             }
-            
+
             recommendations.push("检查 Checkpoint 文件大小和存储性能".to_string());
             recommendations.push("考虑使用异步 Checkpoint 保存".to_string());
             recommendations.push("检查存储设备健康状态".to_string());

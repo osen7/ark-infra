@@ -1,0 +1,47 @@
+name: "RDMA Physical Degradation"
+scene: "rdma_physical_degradation"
+priority: 90
+
+conditions:
+  - type: "all"
+    conditions:
+      - type: "any"
+        conditions:
+          - type: "event"
+            event_type: "error.net"
+            entity_id_pattern: "roce-*"
+            value_pattern: "phy_degradation"
+          - type: "event"
+            event_type: "error.net"
+            entity_id_pattern: "roce-*"
+            value_pattern: "link_flap"
+      - type: "graph"
+        edge_type: "waits_on"
+        from_pattern: "*pid-*"
+        to_pattern: "*roce-*"
+
+root_cause_pattern:
+  primary: "RoCE 物理层退化（线缆/光模块/端口）"
+  secondary:
+    - "FEC 不可纠错增长"
+    - "链路反复 flap"
+
+solution_steps:
+  - step: 1
+    action: "检查链路与错误计数"
+    command: "ethtool <iface> && ethtool -S <iface> | egrep -i 'err|drop|crc'"
+    manual: false
+  - step: 2
+    action: "检查物理层质量（BER/FEC）"
+    command: "mlxlink -d <mst_device> --show_counters"
+    manual: true
+
+related_evidences:
+  - "error.net"
+  - "transport.drop"
+  - "topo.link_down"
+
+applicability:
+  min_confidence: 0.8
+  required_events:
+    - "error.net"

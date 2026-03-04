@@ -1,14 +1,14 @@
 //! Prometheus Metrics 收集模块
-//! 
+//!
 //! 暴露 Ark Agent 的指标供 Prometheus 抓取
 
+use ark_core::event::EventType;
+use ark_core::graph::StateGraph;
 use prometheus::{
-    register_counter_vec, register_gauge_vec, register_histogram_vec,
-    CounterVec, GaugeVec, HistogramVec, Encoder, TextEncoder,
+    register_counter_vec, register_gauge_vec, register_histogram_vec, CounterVec, GaugeVec,
+    HistogramVec, TextEncoder,
 };
 use std::sync::Arc;
-use ark_core::graph::StateGraph;
-use ark_core::event::EventType;
 
 /// Metrics 收集器
 pub struct MetricsCollector {
@@ -17,7 +17,7 @@ pub struct MetricsCollector {
     graph_edges_total: GaugeVec,
     events_processed_total: CounterVec,
     probe_errors_total: CounterVec,
-    
+
     // 详细指标
     process_resource_usage: GaugeVec,
     process_wait_time_seconds: HistogramVec,
@@ -50,7 +50,7 @@ impl MetricsCollector {
                 "探针错误计数",
                 &["probe_name"]
             )?,
-            
+
             // 详细指标
             process_resource_usage: register_gauge_vec!(
                 "ark_process_resource_usage",
@@ -75,12 +75,12 @@ impl MetricsCollector {
             )?,
         })
     }
-    
+
     /// 更新图指标（从 StateGraph 收集）
     pub async fn update_graph_metrics(&self, graph: &Arc<StateGraph>) {
         let nodes = graph.get_nodes_async().await;
         let edges = graph.get_all_edges_async().await;
-        
+
         // 统计节点类型
         let mut node_counts = std::collections::HashMap::new();
         for node in nodes.values() {
@@ -91,14 +91,14 @@ impl MetricsCollector {
             };
             *node_counts.entry(node_type).or_insert(0) += 1;
         }
-        
+
         // 更新节点指标
         for (node_type, count) in node_counts {
             self.graph_nodes_total
                 .with_label_values(&[node_type])
                 .set(count as f64);
         }
-        
+
         // 统计边类型
         let mut edge_counts = std::collections::HashMap::new();
         for edge in &edges {
@@ -109,7 +109,7 @@ impl MetricsCollector {
             };
             *edge_counts.entry(edge_type).or_insert(0) += 1;
         }
-        
+
         // 更新边指标
         for (edge_type, count) in edge_counts {
             self.graph_edges_total
@@ -117,7 +117,7 @@ impl MetricsCollector {
                 .set(count as f64);
         }
     }
-    
+
     /// 记录事件处理
     pub fn record_event(&self, event_type: &EventType) {
         let event_type_str = match event_type {
@@ -134,19 +134,19 @@ impl MetricsCollector {
             EventType::IntentRun => "intent_run",
             EventType::ActionExec => "action_exec",
         };
-        
+
         self.events_processed_total
             .with_label_values(&[event_type_str])
             .inc();
     }
-    
+
     /// 记录探针错误
     pub fn record_probe_error(&self, probe_name: &str) {
         self.probe_errors_total
             .with_label_values(&[probe_name])
             .inc();
     }
-    
+
     /// 更新进程资源使用指标
     pub fn update_process_resource(
         &self,
@@ -158,15 +158,10 @@ impl MetricsCollector {
     ) {
         let job_id_str = job_id.unwrap_or("unknown");
         self.process_resource_usage
-            .with_label_values(&[
-                &pid.to_string(),
-                job_id_str,
-                resource_type,
-                metric,
-            ])
+            .with_label_values(&[&pid.to_string(), job_id_str, resource_type, metric])
             .set(value);
     }
-    
+
     /// 记录进程等待时间
     pub fn record_process_wait_time(
         &self,
@@ -177,28 +172,24 @@ impl MetricsCollector {
     ) {
         let job_id_str = job_id.unwrap_or("unknown");
         self.process_wait_time_seconds
-            .with_label_values(&[
-                &pid.to_string(),
-                job_id_str,
-                resource_type,
-            ])
+            .with_label_values(&[&pid.to_string(), job_id_str, resource_type])
             .observe(seconds);
     }
-    
+
     /// 记录错误
     pub fn record_error(&self, error_type: &str, node_id: &str) {
         self.error_count
             .with_label_values(&[error_type, node_id])
             .inc();
     }
-    
+
     /// 记录规则匹配
     pub fn record_rule_match(&self, rule_name: &str) {
         self.rule_matches_total
             .with_label_values(&[rule_name])
             .inc();
     }
-    
+
     /// 生成 Prometheus 格式的指标输出
     pub fn gather(&self) -> Result<String, prometheus::Error> {
         let encoder = TextEncoder::new();

@@ -1,0 +1,45 @@
+nameOverride: ""
+fullnameOverride: ""
+
+hub:
+  image:
+    repository: ark-hub
+    tag: latest
+    pullPolicy: IfNotPresent
+  wsPort: 8080
+  httpPort: 8081
+  enableK8sController: true
+  rulesDir: "rules"
+  eventBufferSize: 20000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+agent:
+  image:
+    repository: ark
+    tag: latest
+    pullPolicy: IfNotPresent
+  hostNetwork: true
+  hostPID: true
+  hostIPC: true
+  privileged: true
+  hubUrl: "ws://ark-hub:8080"
+  probePath: "/opt/ark/probes/ark-probe-rdma-mock.py"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+rbac:
+  create: true
+
+service:
+  type: ClusterIP

@@ -12,6 +12,17 @@ impl RuleMatcher {
         events: &[Event],
         graph: &StateGraph,
     ) -> bool {
+        let edges = graph.get_all_edges_async().await;
+        let nodes = graph.get_nodes_async().await;
+        Self::match_condition_with_snapshot(condition, events, &edges, &nodes)
+    }
+
+    fn match_condition_with_snapshot(
+        condition: &Condition,
+        events: &[Event],
+        edges: &[crate::graph::Edge],
+        nodes: &std::collections::HashMap<String, crate::graph::Node>,
+    ) -> bool {
         match condition {
             Condition::Event {
                 event_type,
@@ -63,9 +74,6 @@ impl RuleMatcher {
                 from_pattern,
                 to_pattern,
             } => {
-                // 获取图中的所有边（异步）
-                let edges = graph.get_all_edges_async().await;
-                
                 edges.iter().any(|edge| {
                     // 匹配边类型
                     let edge_type_str = match edge.edge_type {
@@ -73,7 +81,7 @@ impl RuleMatcher {
                         EdgeType::WaitsOn => "waits_on",
                         EdgeType::BlockedBy => "blocked_by",
                     };
-                    
+
                     if edge_type_str != edge_type.as_str() {
                         return false;
                     }
@@ -100,9 +108,6 @@ impl RuleMatcher {
                 entity_id_pattern,
                 metrics,
             } => {
-                // 获取所有节点
-                let nodes = graph.get_nodes_async().await;
-                
                 nodes.values().any(|node| {
                     // 匹配节点类型
                     if let Some(ref nt) = node_type {
@@ -115,24 +120,24 @@ impl RuleMatcher {
                             return false;
                         }
                     }
-                    
+
                     // 匹配实体 ID 模式
                     if let Some(ref pattern) = entity_id_pattern {
                         if !matches_pattern(&node.id, pattern) {
                             return false;
                         }
                     }
-                    
+
                     // 匹配所有指标条件
-                    metrics.iter().all(|metric| {
-                        match_metric_condition(metric, &node.metadata)
-                    })
+                    metrics
+                        .iter()
+                        .all(|metric| match_metric_condition(metric, &node.metadata))
                 })
             }
             Condition::Any { conditions } => {
                 // OR 逻辑：任意一个条件满足即可
                 for condition in conditions {
-                    if Self::match_condition(condition, events, graph).await {
+                    if Self::match_condition_with_snapshot(condition, events, edges, nodes) {
                         return true;
                     }
                 }
@@ -141,7 +146,7 @@ impl RuleMatcher {
             Condition::All { conditions } => {
                 // AND 逻辑：所有条件都必须满足
                 for condition in conditions {
-                    if !Self::match_condition(condition, events, graph).await {
+                    if !Self::match_condition_with_snapshot(condition, events, edges, nodes) {
                         return false;
                     }
                 }
@@ -156,8 +161,10 @@ impl RuleMatcher {
         events: &[Event],
         graph: &StateGraph,
     ) -> bool {
+        let edges = graph.get_all_edges_async().await;
+        let nodes = graph.get_nodes_async().await;
         for condition in conditions {
-            if !Self::match_condition(condition, events, graph).await {
+            if !Self::match_condition_with_snapshot(condition, events, &edges, &nodes) {
                 return false;
             }
         }
@@ -166,12 +173,15 @@ impl RuleMatcher {
 }
 
 /// 匹配指标条件（支持数值和字符串比较）
-fn match_metric_condition(metric: &MetricCondition, metadata: &std::collections::HashMap<String, String>) -> bool {
+fn match_metric_condition(
+    metric: &MetricCondition,
+    metadata: &std::collections::HashMap<String, String>,
+) -> bool {
     let actual_str = match metadata.get(&metric.key) {
         Some(v) => v,
         None => return false,
     };
-    
+
     match metric.value_type {
         ValueType::Numeric => {
             // 数值比较
@@ -179,12 +189,12 @@ fn match_metric_condition(metric: &MetricCondition, metadata: &std::collections:
                 Ok(v) => v,
                 Err(_) => return false, // 无法解析为数值，不匹配
             };
-            
+
             let target_val = match metric.target.parse::<f64>() {
                 Ok(v) => v,
                 Err(_) => return false,
             };
-            
+
             match metric.op {
                 ComparisonOp::Gt => actual_val > target_val,
                 ComparisonOp::Lt => actual_val < target_val,
@@ -198,15 +208,17 @@ fn match_metric_condition(metric: &MetricCondition, metadata: &std::collections:
         ValueType::String => {
             // 字符串比较
             match metric.op {
-                ComparisonOp::Eq => actual_str == metric.target,
-                ComparisonOp::Ne => actual_str != metric.target,
+                ComparisonOp::Eq => actual_str == metric.target.as_str(),
+                ComparisonOp::Ne => actual_str != metric.target.as_str(),
                 ComparisonOp::Contains => actual_str.contains(&metric.target),
                 _ => false, // 其他操作符对字符串无效
             }
         }
         ValueType::Auto => {
             // 自动检测：先尝试数值，失败则用字符串
-            if let (Ok(actual_val), Ok(target_val)) = (actual_str.parse::<f64>(), metric.target.parse::<f64>()) {
+            if let (Ok(actual_val), Ok(target_val)) =
+                (actual_str.parse::<f64>(), metric.target.parse::<f64>())
+            {
                 // 数值比较
                 match metric.op {
                     ComparisonOp::Gt => actual_val > target_val,
@@ -220,8 +232,8 @@ fn match_metric_condition(metric: &MetricCondition, metadata: &std::collections:
             } else {
                 // 字符串比较
                 match metric.op {
-                    ComparisonOp::Eq => actual_str == metric.target,
-                    ComparisonOp::Ne => actual_str != metric.target,
+                    ComparisonOp::Eq => actual_str == metric.target.as_str(),
+                    ComparisonOp::Ne => actual_str != metric.target.as_str(),
                     ComparisonOp::Contains => actual_str.contains(&metric.target),
                     _ => false,
                 }
@@ -233,21 +245,53 @@ fn match_metric_condition(metric: &MetricCondition, metadata: &std::collections:
 /// 简单的通配符模式匹配
 /// 支持 * 通配符（如 "gpu-*"）
 fn matches_pattern(text: &str, pattern: &str) -> bool {
-    if pattern.contains('*') {
-        let parts: Vec<&str> = pattern.split('*').collect();
-        if parts.len() == 2 {
-            // 简单的前缀和后缀匹配
-            text.starts_with(parts[0]) && text.ends_with(parts[1])
-        } else if parts.len() == 1 {
-            // 只有前缀或后缀
-            text.starts_with(parts[0]) || text.ends_with(parts[0])
-        } else {
-            // 多个 * 暂不支持，使用精确匹配
-            text == pattern
-        }
-    } else {
-        text == pattern
+    pattern
+        .split('|')
+        .any(|p| matches_single_pattern(text, p.trim()))
+}
+
+fn matches_single_pattern(text: &str, pattern: &str) -> bool {
+    if pattern.is_empty() {
+        return text.is_empty();
     }
+    if pattern == "*" {
+        return true;
+    }
+    if !pattern.contains('*') {
+        return text == pattern;
+    }
+
+    let anchored_start = !pattern.starts_with('*');
+    let anchored_end = !pattern.ends_with('*');
+    let parts: Vec<&str> = pattern.split('*').filter(|p| !p.is_empty()).collect();
+
+    if parts.is_empty() {
+        return true;
+    }
+
+    let mut cursor = 0usize;
+    for (idx, part) in parts.iter().enumerate() {
+        if idx == 0 && anchored_start {
+            if !text[cursor..].starts_with(part) {
+                return false;
+            }
+            cursor += part.len();
+            continue;
+        }
+
+        if let Some(found) = text[cursor..].find(part) {
+            cursor += found + part.len();
+        } else {
+            return false;
+        }
+    }
+
+    if anchored_end {
+        if let Some(last) = parts.last() {
+            return text.ends_with(last);
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -260,5 +304,8 @@ mod tests {
         assert!(matches_pattern("gpu-1", "gpu-*"));
         assert!(!matches_pattern("cpu-0", "gpu-*"));
         assert!(matches_pattern("mlx5_0", "mlx5_*"));
+        assert!(matches_pattern("node-a::roce-mlx5_0", "*roce-*"));
+        assert!(matches_pattern("eth0", "roce-*|eth*"));
+        assert!(!matches_pattern("ib0", "roce-*|eth*"));
     }
 }

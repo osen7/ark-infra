@@ -1,0 +1,15 @@
+# Default owners
+* @osen7
+
+# Core engine
+/core/ @osen7
+/rules/ @osen7
+
+# Runtime components
+/agent/ @osen7
+/hub/ @osen7
+
+# Delivery
+/deploy/ @osen7
+/charts/ @osen7
+/docs/ @osen7

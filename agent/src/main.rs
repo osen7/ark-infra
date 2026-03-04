@@ -1,24 +1,36 @@
-mod plugin;
-mod exec;
-mod ipc;
-mod diag;
-mod scene;
-mod hub_forwarder;
-mod metrics;
 mod audit;
+mod diag;
+#[allow(dead_code)]
+mod exec;
+#[allow(dead_code)]
+mod hub_forwarder;
+#[allow(dead_code)]
+mod ipc;
+#[allow(dead_code)]
+mod metrics;
+#[allow(dead_code)]
+mod plugin;
+#[allow(
+    dead_code,
+    clippy::collapsible_if,
+    clippy::vec_init_then_push,
+    clippy::derivable_impls
+)]
+mod scene;
 
-use clap::{Parser, Subcommand};
-use ark_core::event::{Event, EventBus};
+use ark_core::event::EventBus;
 use ark_core::graph::StateGraph;
-use ipc::{IpcClient, IpcServer, default_socket_path};
-use plugin::SubprocessProbe;
-use exec::{SystemActuator, FixEngine};
+use clap::{Parser, Subcommand};
 use diag::run_diagnosis;
-use scene::{SceneIdentifier, SceneType};
-use hub_forwarder::{HubForwarder, get_node_id};
+use exec::{FixEngine, SystemActuator};
+use hub_forwarder::{get_node_id, HubForwarder};
+use ipc::{default_socket_path, IpcClient, IpcServer};
 use metrics::MetricsCollector;
-use std::sync::Arc;
+use plugin::{Actuator, EventSource, SubprocessProbe};
+use scene::SceneType;
 use std::path::PathBuf;
+use std::sync::Arc;
+use warp::{Filter, Reply};
 
 #[cfg(windows)]
 const DEFAULT_IPC_PORT: u16 = 9090;
@@ -155,11 +167,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         #[cfg(unix)]
-        Commands::Run { socket_path, probe, hub_url } => {
+        Commands::Run {
+            socket_path,
+            probe,
+            hub_url,
+        } => {
             run_daemon(socket_path, probe, hub_url).await?;
         }
         #[cfg(windows)]
-        Commands::Run { port, probe, hub_url } => {
+        Commands::Run {
+            port,
+            probe,
+            hub_url,
+        } => {
             run_daemon(port, probe, hub_url).await?;
         }
         #[cfg(unix)]
@@ -182,34 +202,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             zap_process(pid).await?;
         }
         #[cfg(unix)]
-        Commands::Diag { pid, socket_path, provider, rules_dir } => {
+        Commands::Diag {
+            pid,
+            socket_path,
+            provider,
+            rules_dir,
+        } => {
             diagnose_process(pid, socket_path, provider, rules_dir).await?;
         }
         #[cfg(windows)]
-        Commands::Diag { pid, port, provider, rules_dir } => {
+        Commands::Diag {
+            pid,
+            port,
+            provider,
+            rules_dir,
+        } => {
             diagnose_process(pid, port, provider, rules_dir).await?;
         }
         #[cfg(unix)]
-        Commands::Fix { pid, socket_path, rules_dir, yes, audit_log } => {
+        Commands::Fix {
+            pid,
+            socket_path,
+            rules_dir,
+            yes,
+            audit_log,
+        } => {
             fix_process(pid, socket_path, rules_dir, yes, audit_log).await?;
         }
         #[cfg(windows)]
-        Commands::Fix { pid, port, rules_dir, yes, audit_log } => {
+        Commands::Fix {
+            pid,
+            port,
+            rules_dir,
+            yes,
+            audit_log,
+        } => {
             fix_process(pid, port, rules_dir, yes, audit_log).await?;
         }
-        Commands::Cluster { command, hub } => {
-            match command {
-                ClusterCommands::Ps => {
-                    cluster_ps(&hub).await?;
-                }
-                ClusterCommands::Why { job_id } => {
-                    cluster_why(&hub, &job_id).await?;
-                }
-                ClusterCommands::Fix { job_id, yes } => {
-                    cluster_fix(&hub, &job_id, yes).await?;
-                }
+        Commands::Cluster { command, hub } => match command {
+            ClusterCommands::Ps => {
+                cluster_ps(&hub).await?;
             }
-        }
+            ClusterCommands::Why { job_id } => {
+                cluster_why(&hub, &job_id).await?;
+            }
+            ClusterCommands::Fix { job_id, yes } => {
+                cluster_fix(&hub, &job_id, yes).await?;
+            }
+        },
     }
 
     Ok(())
@@ -223,14 +263,14 @@ async fn run_daemon(
     hub_url: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("[ark] 启动事件总线...");
-    
+
     // 创建事件总线
     let mut bus = EventBus::new(1000);
     let tx = bus.sender();
 
     // 创建状态图
     let graph = Arc::new(StateGraph::new());
-    
+
     // 创建 Metrics 收集器
     let metrics = Arc::new(MetricsCollector::new()?);
 
@@ -238,35 +278,35 @@ async fn run_daemon(
     let metrics_server_handle = {
         let metrics = Arc::clone(&metrics);
         tokio::spawn(async move {
-            let routes = warp::path("metrics")
-                .and(warp::get())
-                .and_then(move || {
-                    let metrics = Arc::clone(&metrics);
-                    async move {
-                        match metrics.gather() {
-                            Ok(body) => Ok(warp::reply::with_header(
+            let routes = warp::path("metrics").and(warp::get()).and_then(move || {
+                let metrics = Arc::clone(&metrics);
+                async move {
+                    match metrics.gather() {
+                        Ok(body) => Ok::<_, warp::Rejection>(
+                            warp::reply::with_header(
                                 body,
                                 "content-type",
                                 "text/plain; version=0.0.4",
-                            )),
-                            Err(e) => {
-                                eprintln!("[metrics] 收集指标失败: {}", e);
-                                Ok(warp::reply::with_status(
-                                    format!("Error: {}", e),
-                                    warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-                                ))
-                            }
+                            )
+                            .into_response(),
+                        ),
+                        Err(e) => {
+                            eprintln!("[metrics] 收集指标失败: {}", e);
+                            Ok(warp::reply::with_status(
+                                format!("Error: {}", e),
+                                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            )
+                            .into_response())
                         }
                     }
-                });
-            
+                }
+            });
+
             println!("[ark] Prometheus Metrics 端点: http://0.0.0.0:9091/metrics");
-            warp::serve(routes)
-                .run(([0, 0, 0, 0], 9091))
-                .await;
+            warp::serve(routes).run(([0, 0, 0, 0], 9091)).await;
         })
     };
-    
+
     // 启动指标更新任务（每 5 秒更新一次）
     let metrics_update_handle = {
         let graph = Arc::clone(&graph);
@@ -287,44 +327,69 @@ async fn run_daemon(
             if let Some(ref path) = probe_path {
                 // 使用外部探针脚本
                 // 尝试 python3，如果失败则尝试 python（Windows 兼容）
-                let python_cmd = if cfg!(windows) {
-                    "python"
-                } else {
-                    "python3"
-                };
-                
+                let python_cmd = if cfg!(windows) { "python" } else { "python3" };
+
                 let probe = SubprocessProbe::new(
                     python_cmd.to_string(),
                     vec![path.to_string_lossy().to_string()],
                 );
-                
+
                 if let Err(e) = probe.start_stream(tx).await {
                     eprintln!("[ark] 外部探针异常退出: {}", e);
                 }
             } else {
                 // 使用内置 dummy_probe（向后兼容）
                 eprintln!("[ark] 警告：使用内置 dummy_probe，建议使用 --probe 指定外部探针脚本");
-                if let Err(e) = event::dummy_probe(tx).await {
+                if let Err(e) = ark_core::event::dummy_probe(tx).await {
                     eprintln!("[ark] 内置探针异常退出: {}", e);
                 }
             }
         })
     };
 
-    // 启动事件消费和图形更新任务
+    // 初始化 Hub 转发器（如果配置了 hub_url）
+    let mut hub_forwarder: Option<HubForwarder> = None;
+    if let Some(ref url) = hub_url {
+        let node_id = get_node_id();
+        let mut forwarder = HubForwarder::new(url.clone(), node_id.clone());
+        if let Err(e) = forwarder.connect().await {
+            eprintln!(
+                "[ark] 警告：无法连接到 Hub {}: {}，将继续运行但不推送事件",
+                url, e
+            );
+        } else {
+            hub_forwarder = Some(forwarder);
+            println!("[ark] Hub 转发器已启动，节点ID: {}", node_id);
+        }
+    }
+
+    // 启动事件消费和图形更新任务（同时推送到 Hub）
     let graph_handle = {
         let graph = Arc::clone(&graph);
         let metrics = Arc::clone(&metrics);
-        let mut rx = bus.receiver();
+        let hub_forwarder = hub_forwarder.map(|f| Arc::new(tokio::sync::RwLock::new(f)));
+        let mut rx = bus
+            .receiver()
+            .ok_or_else(|| std::io::Error::other("event receiver already taken"))?;
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
                     Some(event) => {
                         // 记录事件处理指标
                         metrics.record_event(&event.event_type);
-                        
+
                         if let Err(e) = graph.process_event(&event).await {
                             eprintln!("[ark] 处理事件失败: {}", e);
+                        }
+
+                        // 推送到 Hub（如果配置了且事件需要推送）
+                        if let Some(ref forwarder_arc) = hub_forwarder {
+                            let forwarder = forwarder_arc.read().await;
+                            if forwarder.should_forward(&event).await {
+                                if let Err(e) = forwarder.forward_event(event.clone()).await {
+                                    eprintln!("[ark] 推送事件到 Hub 失败: {}", e);
+                                }
+                            }
                         }
                     }
                     None => {
@@ -339,7 +404,7 @@ async fn run_daemon(
     // 启动 IPC 服务器（在后台任务中运行）
     let socket_path = socket_path.unwrap_or_else(default_socket_path);
     let socket_path_clone = socket_path.clone();
-    
+
     let ipc_handle = {
         let graph = Arc::clone(&graph);
         tokio::spawn(async move {
@@ -351,13 +416,16 @@ async fn run_daemon(
     };
 
     println!("[ark] 探针已启动，状态图已初始化");
-    println!("[ark] IPC 服务器已启动，监听 Unix Socket: {}", socket_path.display());
+    println!(
+        "[ark] IPC 服务器已启动，监听 Unix Socket: {}",
+        socket_path.display()
+    );
     println!("[ark] 按 Ctrl+C 退出\n");
 
     // 等待退出信号
     tokio::signal::ctrl_c().await?;
     println!("\n[ark] 收到退出信号，正在关闭...");
-    
+
     probe_handle.abort();
     graph_handle.abort();
     ipc_handle.abort();
@@ -382,7 +450,7 @@ async fn run_daemon(
     hub_url: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("[ark] 启动事件总线...");
-    
+
     // 创建事件总线
     let mut bus = EventBus::new(1000);
     let tx = bus.sender();
@@ -399,13 +467,13 @@ async fn run_daemon(
                     "python".to_string(),
                     vec![path.to_string_lossy().to_string()],
                 );
-                
+
                 if let Err(e) = probe.start_stream(tx).await {
                     eprintln!("[ark] 外部探针异常退出: {}", e);
                 }
             } else {
                 eprintln!("[ark] 警告：使用内置 dummy_probe，建议使用 --probe 指定外部探针脚本");
-                if let Err(e) = event::dummy_probe(tx).await {
+                if let Err(e) = ark_core::event::dummy_probe(tx).await {
                     eprintln!("[ark] 内置探针异常退出: {}", e);
                 }
             }
@@ -418,7 +486,10 @@ async fn run_daemon(
         let node_id = get_node_id();
         let mut forwarder = HubForwarder::new(url.clone(), node_id.clone());
         if let Err(e) = forwarder.connect().await {
-            eprintln!("[ark] 警告：无法连接到 Hub {}: {}，将继续运行但不推送事件", url, e);
+            eprintln!(
+                "[ark] 警告：无法连接到 Hub {}: {}，将继续运行但不推送事件",
+                url, e
+            );
         } else {
             hub_forwarder = Some(forwarder);
             println!("[ark] Hub 转发器已启动，节点ID: {}", node_id);
@@ -429,7 +500,9 @@ async fn run_daemon(
     let graph_handle = {
         let graph = Arc::clone(&graph);
         let hub_forwarder = hub_forwarder.map(|f| Arc::new(tokio::sync::RwLock::new(f)));
-        let mut rx = bus.receiver();
+        let mut rx = bus
+            .receiver()
+            .ok_or_else(|| std::io::Error::other("event receiver already taken"))?;
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
@@ -438,7 +511,7 @@ async fn run_daemon(
                         if let Err(e) = graph.process_event(&event).await {
                             eprintln!("[ark] 处理事件失败: {}", e);
                         }
-                        
+
                         // 推送到 Hub（如果配置了且事件需要推送）
                         if let Some(ref forwarder_arc) = hub_forwarder {
                             let forwarder = forwarder_arc.read().await;
@@ -476,7 +549,7 @@ async fn run_daemon(
     // 等待退出信号
     tokio::signal::ctrl_c().await?;
     println!("\n[ark] 收到退出信号，正在关闭...");
-    
+
     probe_handle.abort();
     graph_handle.abort();
     ipc_handle.abort();
@@ -489,7 +562,7 @@ async fn run_daemon(
 #[cfg(unix)]
 async fn query_processes(socket_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let client = IpcClient::new(socket_path);
-    
+
     // 检查 daemon 是否运行
     if !client.ping().await? {
         eprintln!("[ark] 错误：无法连接到 daemon");
@@ -519,14 +592,8 @@ async fn query_processes(socket_path: Option<PathBuf>) -> Result<(), Box<dyn std
     // 打印每个进程
     for proc in processes {
         let pid = proc["pid"].as_u64().unwrap_or(0) as u32;
-        let job_id = proc["job_id"]
-            .as_str()
-            .unwrap_or("-")
-            .to_string();
-        let state = proc["state"]
-            .as_str()
-            .unwrap_or("unknown")
-            .to_string();
+        let job_id = proc["job_id"].as_str().unwrap_or("-").to_string();
+        let state = proc["state"].as_str().unwrap_or("unknown").to_string();
 
         // 从 IPC 响应中获取资源列表
         let resources: Vec<String> = proc["resources"]
@@ -559,7 +626,7 @@ async fn query_processes(socket_path: Option<PathBuf>) -> Result<(), Box<dyn std
 #[cfg(windows)]
 async fn query_processes(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let client = IpcClient::new(port);
-    
+
     // 检查 daemon 是否运行
     if !client.ping().await? {
         eprintln!("[ark] 错误：无法连接到 daemon (端口 {})", port);
@@ -589,14 +656,8 @@ async fn query_processes(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     // 打印每个进程
     for proc in processes {
         let pid = proc["pid"].as_u64().unwrap_or(0) as u32;
-        let job_id = proc["job_id"]
-            .as_str()
-            .unwrap_or("-")
-            .to_string();
-        let state = proc["state"]
-            .as_str()
-            .unwrap_or("unknown")
-            .to_string();
+        let job_id = proc["job_id"].as_str().unwrap_or("-").to_string();
+        let state = proc["state"].as_str().unwrap_or("unknown").to_string();
 
         // 从 IPC 响应中获取资源列表
         let resources: Vec<String> = proc["resources"]
@@ -628,12 +689,15 @@ async fn query_processes(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 
 /// 查询进程阻塞根因（通过 IPC）
 #[cfg(unix)]
-async fn query_why(pid: u32, socket_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
-    use colored::*;
+async fn query_why(
+    pid: u32,
+    socket_path: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
     use crate::ipc::IpcClient;
-    
+    use colored::*;
+
     let client = IpcClient::new(socket_path);
-    
+
     // 检查 daemon 是否运行
     if !client.ping().await? {
         eprintln!("[ark] 错误：无法连接到 daemon");
@@ -646,27 +710,30 @@ async fn query_why(pid: u32, socket_path: Option<PathBuf>) -> Result<(), Box<dyn
 
     // 尝试场景识别和分析（需要访问图状态，当前通过 IPC 无法直接访问）
     // 这里先使用基本的根因分析，场景分析功能可以在未来扩展 IPC 接口后启用
-    
+
     if causes.is_empty() {
-        println!(
-            "进程 {} 未发现阻塞问题",
-            pid.to_string().bright_green()
-        );
+        println!("进程 {} 未发现阻塞问题", pid.to_string().bright_green());
         return Ok(());
     }
 
-    println!(
-        "进程 {} 的阻塞根因分析:",
-        pid.to_string().bright_green()
-    );
+    println!("进程 {} 的阻塞根因分析:", pid.to_string().bright_green());
     println!("{}", "-".repeat(60));
 
     // 尝试识别场景类型（基于根因文本）
-    let scene_hint = if causes.iter().any(|c| c.contains("GPU") || c.contains("OOM") || c.contains("显存")) {
+    let scene_hint = if causes
+        .iter()
+        .any(|c| c.contains("GPU") || c.contains("OOM") || c.contains("显存"))
+    {
         Some("GPU OOM")
-    } else if causes.iter().any(|c| c.contains("网络") || c.contains("network") || c.contains("等待资源")) {
+    } else if causes
+        .iter()
+        .any(|c| c.contains("网络") || c.contains("network") || c.contains("等待资源"))
+    {
         Some("网络阻塞")
-    } else if causes.iter().any(|c| c.contains("exit") || c.contains("crash") || c.contains("failed")) {
+    } else if causes
+        .iter()
+        .any(|c| c.contains("exit") || c.contains("crash") || c.contains("failed"))
+    {
         Some("进程崩溃")
     } else {
         None
@@ -693,7 +760,7 @@ async fn query_why(pid: u32, socket_path: Option<PathBuf>) -> Result<(), Box<dyn
 /// 强制终止进程
 async fn zap_process(pid: u32) -> Result<(), Box<dyn std::error::Error>> {
     println!("[ark] 正在终止进程 {}...", pid);
-    
+
     let actuator = SystemActuator::new();
     match actuator.execute(pid, "zap").await {
         Ok(_) => {
@@ -701,20 +768,20 @@ async fn zap_process(pid: u32) -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(e) => {
             eprintln!("[ark] 终止进程失败: {}", e);
-            return Err(e.into());
+            return Err(std::io::Error::other(e).into());
         }
     }
-    
+
     Ok(())
 }
 
 #[cfg(windows)]
 async fn query_why(pid: u32, port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    use colored::*;
     use crate::ipc::IpcClient;
-    
+    use colored::*;
+
     let client = IpcClient::new(port);
-    
+
     // 检查 daemon 是否运行
     if !client.ping().await? {
         eprintln!("[ark] 错误：无法连接到 daemon (端口 {})", port);
@@ -726,25 +793,28 @@ async fn query_why(pid: u32, port: u16) -> Result<(), Box<dyn std::error::Error>
     let causes = client.why_process(pid).await?;
 
     if causes.is_empty() {
-        println!(
-            "进程 {} 未发现阻塞问题",
-            pid.to_string().bright_green()
-        );
+        println!("进程 {} 未发现阻塞问题", pid.to_string().bright_green());
         return Ok(());
     }
 
-    println!(
-        "进程 {} 的阻塞根因分析:",
-        pid.to_string().bright_green()
-    );
+    println!("进程 {} 的阻塞根因分析:", pid.to_string().bright_green());
     println!("{}", "-".repeat(60));
 
     // 尝试识别场景类型（基于根因文本）
-    let scene_hint = if causes.iter().any(|c| c.contains("GPU") || c.contains("OOM") || c.contains("显存")) {
+    let scene_hint = if causes
+        .iter()
+        .any(|c| c.contains("GPU") || c.contains("OOM") || c.contains("显存"))
+    {
         Some("GPU OOM")
-    } else if causes.iter().any(|c| c.contains("网络") || c.contains("network") || c.contains("等待资源")) {
+    } else if causes
+        .iter()
+        .any(|c| c.contains("网络") || c.contains("network") || c.contains("等待资源"))
+    {
         Some("网络阻塞")
-    } else if causes.iter().any(|c| c.contains("exit") || c.contains("crash") || c.contains("failed")) {
+    } else if causes
+        .iter()
+        .any(|c| c.contains("exit") || c.contains("crash") || c.contains("failed"))
+    {
         Some("进程崩溃")
     } else {
         None
@@ -778,10 +848,7 @@ async fn diagnose_process(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use colored::*;
 
-    println!(
-        "[ark] 正在诊断进程 {}...",
-        pid.to_string().bright_green()
-    );
+    println!("[ark] 正在诊断进程 {}...", pid.to_string().bright_green());
     println!("[ark] 收集诊断信息...\n");
 
     // 如果没有指定规则目录，尝试使用默认的 ./rules
@@ -834,7 +901,7 @@ async fn diagnose_process(
     // AI 建议
     println!("{}", "AI 诊断建议:".bright_green().bold());
     println!("{}", "-".repeat(70));
-    
+
     // 格式化输出建议（按段落分割）
     let lines: Vec<&str> = diagnosis.recommendation.lines().collect();
     for line in lines {
@@ -844,7 +911,12 @@ async fn diagnose_process(
         } else if trimmed.starts_with('#') || trimmed.starts_with("##") {
             // 标题
             println!("{}", trimmed.bright_cyan());
-        } else if trimmed.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        } else if trimmed
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false)
+        {
             // 编号列表
             println!("  {}", trimmed);
         } else {
@@ -868,48 +940,38 @@ async fn diagnose_process(
 async fn fix_process(
     pid: u32,
     socket_path: Option<PathBuf>,
-    rules_dir: Option<PathBuf>,
+    _rules_dir: Option<PathBuf>,
     auto_yes: bool,
     audit_log: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use colored::Colorize;
-    
-    println!(
-        "[ark] 正在修复进程 {}...",
-        pid.to_string().bright_green()
-    );
-    
+
+    println!("[ark] 正在修复进程 {}...", pid.to_string().bright_green());
+
     // 连接到 daemon
     let client = IpcClient::new(socket_path);
     if !client.ping().await? {
         return Err("无法连接到 daemon，请先运行: ark run".into());
     }
-    
+
     // 获取根因分析（用于场景识别）
     let causes = client.why_process(pid).await?;
-    
+
     // 识别场景（简化版：基于根因文本）
     let scene = identify_scene_from_causes(&causes);
-    
+
     if scene.is_none() {
         println!("{}", "[ark] 未识别到问题场景，无法自动修复".bright_yellow());
         println!("提示: 可以尝试手动执行: ark zap {}", pid);
         return Ok(());
     }
-    
+
     let scene = scene.unwrap();
     println!("[ark] 识别到场景: {:?}", scene);
-    
+
     // 创建分析结果（基于根因）
     let analysis = create_analysis_from_causes(scene, &causes);
-    
-    if analysis.is_none() {
-        println!("{}", "[ark] 无法分析场景，无法自动修复".bright_yellow());
-        return Ok(());
-    }
-    
-    let analysis = analysis.unwrap();
-    
+
     // 显示推荐动作
     if !analysis.recommended_actions.is_empty() {
         println!("\n{}", "推荐动作:".bright_cyan().bold());
@@ -918,40 +980,36 @@ async fn fix_process(
         }
         println!();
     }
-    
+
     // 确认执行
     if !auto_yes {
         use std::io::{self, Write};
         print!("{}", "是否执行修复? [y/N]: ".bright_yellow());
         io::stdout().flush()?;
-        
+
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
-        
+
         if !input.trim().eq_ignore_ascii_case("y") && !input.trim().eq_ignore_ascii_case("yes") {
             println!("{}", "已取消".bright_yellow());
             return Ok(());
         }
     }
-    
+
     // 初始化审计日志（如果指定了路径）
     let audit_logger = if let Some(ref log_path) = audit_log {
         Some(Arc::new(audit::AuditLogger::new(log_path.clone(), 100)?)) // 100MB 最大大小
     } else {
         None
     };
-    
+
     // 执行修复
     let fix_engine = FixEngine::new();
     let result = fix_engine.fix_from_analysis(&analysis, pid).await?;
-    
+
     // 记录审计日志
     if let Some(ref logger) = audit_logger {
         // 尝试从分析结果中获取 job_id（如果有）
-        let job_id = analysis.recommended_actions.iter()
-            .find(|a| a.contains("job"))
-            .and_then(|_| None); // 简化：暂时不提取 job_id
-        
         let action_str = if !result.executed_actions.is_empty() {
             result.executed_actions[0].action.clone()
         } else if !analysis.recommended_actions.is_empty() {
@@ -959,7 +1017,7 @@ async fn fix_process(
         } else {
             "Unknown".to_string()
         };
-        
+
         let details = format!(
             "执行动作: {}; 成功: {}; 失败: {}; 场景: {:?}",
             action_str,
@@ -967,46 +1025,50 @@ async fn fix_process(
             result.failed_actions.len(),
             analysis.scene
         );
-        
+
         let entry = audit::create_audit_entry(
             &action_str,
             pid,
             None, // job_id 暂时为 None
-            if result.success { "success" } else { "partial_failure" },
+            if result.success {
+                "success"
+            } else {
+                "partial_failure"
+            },
             &details,
         );
-        
+
         if let Err(e) = logger.log(entry).await {
             eprintln!("[audit] 记录审计日志失败: {}", e);
         }
     }
-    
+
     // 显示结果
     println!("\n{}", "=".repeat(70).bright_cyan());
     println!("{}", "修复结果".bright_cyan().bold());
     println!("{}", "=".repeat(70).bright_cyan());
     println!();
-    
+
     if result.success {
         println!("{}", format!("✅ {}", result.message).bright_green());
     } else {
         println!("{}", format!("⚠️  {}", result.message).bright_yellow());
     }
-    
+
     if !result.executed_actions.is_empty() {
         println!("\n{}", "已执行的动作:".bright_green().bold());
         for action in &result.executed_actions {
             println!("  ✅ {}: {}", action.action, action.result);
         }
     }
-    
+
     if !result.failed_actions.is_empty() {
         println!("\n{}", "失败的动作:".bright_red().bold());
         for action in &result.failed_actions {
             println!("  ❌ {}: {}", action.action, action.error);
         }
     }
-    
+
     Ok(())
 }
 
@@ -1014,49 +1076,47 @@ async fn fix_process(
 async fn fix_process(
     pid: u32,
     port: u16,
-    rules_dir: Option<PathBuf>,
-    auto_yes: bool,
+    _rules_dir: Option<PathBuf>,
+    _auto_yes: bool,
+    audit_log: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use colored::Colorize;
-    
-    println!(
-        "[ark] 正在修复进程 {}...",
-        pid.to_string().bright_green()
-    );
-    
+
+    println!("[ark] 正在修复进程 {}...", pid.to_string().bright_green());
+
     // 连接到 daemon
     let client = IpcClient::new(port);
     if !client.ping().await? {
         return Err("无法连接到 daemon，请先运行: ark run".into());
     }
-    
+
     // 获取根因分析
     let causes = client.why_process(pid).await?;
-    
+
     // 识别场景
     let scene = identify_scene_from_causes(&causes);
-    
+
     if scene.is_none() {
         println!("{}", "[ark] 未识别到问题场景，无法自动修复".bright_yellow());
         return Ok(());
     }
-    
+
     let scene = scene.unwrap();
-    
+
     // 创建分析结果
     let analysis = create_analysis_from_causes(scene, &causes);
-    
+
     // 初始化审计日志（如果指定了路径）
     let audit_logger = if let Some(ref log_path) = audit_log {
         Some(Arc::new(audit::AuditLogger::new(log_path.clone(), 100)?)) // 100MB 最大大小
     } else {
         None
     };
-    
+
     // 执行修复
     let fix_engine = FixEngine::new();
     let result = fix_engine.fix_from_analysis(&analysis, pid).await?;
-    
+
     // 记录审计日志
     if let Some(ref logger) = audit_logger {
         let action_str = if !result.executed_actions.is_empty() {
@@ -1066,7 +1126,7 @@ async fn fix_process(
         } else {
             "Unknown".to_string()
         };
-        
+
         let details = format!(
             "执行动作: {}; 成功: {}; 失败: {}; 场景: {:?}",
             action_str,
@@ -1074,22 +1134,26 @@ async fn fix_process(
             result.failed_actions.len(),
             analysis.scene
         );
-        
+
         let entry = audit::create_audit_entry(
             &action_str,
             pid,
             None, // job_id 暂时为 None
-            if result.success { "success" } else { "partial_failure" },
+            if result.success {
+                "success"
+            } else {
+                "partial_failure"
+            },
             &details,
         );
-        
+
         if let Err(e) = logger.log(entry).await {
             eprintln!("[audit] 记录审计日志失败: {}", e);
         }
     }
-    
+
     println!("修复结果: {}", result.message);
-    
+
     Ok(())
 }
 
@@ -1116,7 +1180,7 @@ fn identify_scene_from_causes(causes: &[String]) -> Option<SceneType> {
 /// 从根因创建分析结果（简化版）
 fn create_analysis_from_causes(scene: SceneType, causes: &[String]) -> scene::AnalysisResult {
     let mut recommended_actions = Vec::new();
-    
+
     // 根据场景类型添加推荐动作
     match scene {
         SceneType::GpuOom => {
@@ -1135,7 +1199,7 @@ fn create_analysis_from_causes(scene: SceneType, causes: &[String]) -> scene::An
             recommended_actions.push("执行 ark zap 终止进程".to_string());
         }
     }
-    
+
     scene::AnalysisResult {
         scene,
         root_causes: causes.to_vec(),
@@ -1149,17 +1213,17 @@ fn create_analysis_from_causes(scene: SceneType, causes: &[String]) -> scene::An
 /// 集群级进程列表查询
 async fn cluster_ps(hub_url: &str) -> Result<(), Box<dyn std::error::Error>> {
     use colored::*;
-    
+
     let url = format!("{}/api/v1/ps", hub_url.trim_end_matches('/'));
     let response = reqwest::get(&url).await?;
     let json: serde_json::Value = response.json().await?;
-    
+
     if let Some(processes) = json.get("processes").and_then(|p| p.as_array()) {
         if processes.is_empty() {
             println!("集群中没有活跃进程");
             return Ok(());
         }
-        
+
         println!(
             "{:>20} | {:>12} | {:>15} | {}",
             "NODE_ID".bright_cyan(),
@@ -1168,45 +1232,49 @@ async fn cluster_ps(hub_url: &str) -> Result<(), Box<dyn std::error::Error>> {
             "STATE".bright_cyan()
         );
         println!("{}", "-".repeat(80));
-        
+
         for proc in processes {
             let id = proc["id"].as_str().unwrap_or("-");
             let job_id = proc["job_id"].as_str().unwrap_or("-");
             let state = proc["state"].as_str().unwrap_or("unknown");
-            
+
             // 从 id 中提取节点和 PID
-            let (node_id, pid) = if id.contains("::") {
+            let (node_id, pid): (&str, &str) = if id.contains("::") {
                 let parts: Vec<&str> = id.split("::").collect();
-                (parts[0], parts.get(1).unwrap_or(&"-"))
+                (parts[0], parts.get(1).copied().unwrap_or("-"))
             } else {
                 ("local", id)
             };
-            
+
             println!("{:>20} | {:>12} | {:>15} | {}", node_id, job_id, pid, state);
         }
     } else {
         eprintln!("错误：无法解析 Hub 响应");
     }
-    
+
     Ok(())
 }
 
 /// 集群级根因分析
 async fn cluster_why(hub_url: &str, job_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     use colored::*;
-    
-    let url = format!("{}/api/v1/why?job_id={}", hub_url.trim_end_matches('/'), job_id);
+
+    let url = format!(
+        "{}/api/v1/why?job_id={}",
+        hub_url.trim_end_matches('/'),
+        job_id
+    );
     let response = reqwest::get(&url).await?;
     let json: serde_json::Value = response.json().await?;
-    
+
     if let Some(error) = json.get("error") {
         eprintln!("错误: {}", error.as_str().unwrap_or("unknown"));
         return Ok(());
     }
-    
+
     println!("🔍 集群级根因分析：job_id = {}", job_id.bright_green());
     println!();
-    
+
     if let Some(causes) = json.get("causes").and_then(|c| c.as_array()) {
         if causes.is_empty() {
             println!("未发现阻塞根因");
@@ -1219,35 +1287,43 @@ async fn cluster_why(hub_url: &str, job_id: &str) -> Result<(), Box<dyn std::err
             }
         }
     }
-    
+
     Ok(())
 }
 
 /// 集群级修复：自动诊断并下发修复命令
-async fn cluster_fix(hub_url: &str, job_id: &str, auto_confirm: bool) -> Result<(), Box<dyn std::error::Error>> {
+async fn cluster_fix(
+    hub_url: &str,
+    job_id: &str,
+    auto_confirm: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     use colored::*;
     use std::io::{self, Write};
-    
+
     println!("🔧 集群级修复：job_id = {}", job_id.bright_green());
     println!();
-    
+
     // 步骤 1：调用 why 接口获取根因和涉及的节点/PID
-    let url = format!("{}/api/v1/why?job_id={}", hub_url.trim_end_matches('/'), job_id);
+    let url = format!(
+        "{}/api/v1/why?job_id={}",
+        hub_url.trim_end_matches('/'),
+        job_id
+    );
     let response = reqwest::get(&url).await?;
     let json: serde_json::Value = response.json().await?;
-    
+
     if let Some(error) = json.get("error") {
         eprintln!("错误: {}", error.as_str().unwrap_or("unknown"));
         return Ok(());
     }
-    
+
     // 步骤 2：显示根因
     if let Some(causes) = json.get("causes").and_then(|c| c.as_array()) {
         if causes.is_empty() {
             println!("未发现阻塞根因，无需修复");
             return Ok(());
         }
-        
+
         println!("发现的根因：");
         for (i, cause) in causes.iter().enumerate() {
             if let Some(cause_str) = cause.as_str() {
@@ -1255,21 +1331,21 @@ async fn cluster_fix(hub_url: &str, job_id: &str, auto_confirm: bool) -> Result<
             }
         }
     }
-    
+
     // 步骤 3：从进程列表中提取节点和 PID
     let mut target_nodes: Vec<(String, u32)> = Vec::new(); // (node_id, pid)
-    
+
     if let Some(processes) = json.get("processes").and_then(|p| p.as_array()) {
         for process in processes {
             if let (Some(node_id), Some(pid)) = (
                 process.get("node_id").and_then(|n| n.as_str()),
-                process.get("pid").and_then(|p| p.as_u64())
+                process.get("pid").and_then(|p| p.as_u64()),
             ) {
                 target_nodes.push((node_id.to_string(), pid as u32));
             }
         }
     }
-    
+
     // 如果进程列表为空，尝试从根因字符串中解析（向后兼容）
     if target_nodes.is_empty() {
         if let Some(causes) = json.get("causes").and_then(|c| c.as_array()) {
@@ -1282,43 +1358,46 @@ async fn cluster_fix(hub_url: &str, job_id: &str, auto_confirm: bool) -> Result<
             }
         }
     }
-    
+
     if target_nodes.is_empty() {
         println!("⚠️  无法从响应中提取节点和 PID 信息，请手动指定");
         return Ok(());
     }
-    
+
     // 步骤 4：显示将要执行的操作并确认
     println!();
     println!("将执行以下修复操作：");
     for (node_id, pid) in &target_nodes {
-        println!("  • 节点 {} 上的 PID {}: 优雅降级 (GracefulShutdown)", 
-            node_id.bright_cyan(), pid.to_string().bright_yellow());
+        println!(
+            "  • 节点 {} 上的 PID {}: 优雅降级 (GracefulShutdown)",
+            node_id.bright_cyan(),
+            pid.to_string().bright_yellow()
+        );
     }
     println!();
-    
+
     // 步骤 5：用户确认
     if !auto_confirm {
         print!("是否确认执行？[y/N]: ");
         io::stdout().flush()?;
-        
+
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
-        
+
         if input.trim().to_lowercase() != "y" {
             println!("已取消");
             return Ok(());
         }
     }
-    
+
     // 步骤 6：调用 fix API 下发命令
     println!();
     println!("正在下发修复命令...");
-    
+
     let client = reqwest::Client::new();
     let mut success_count = 0;
     let mut fail_count = 0;
-    
+
     for (node_id, pid) in target_nodes {
         let fix_url = format!("{}/api/v1/fix", hub_url.trim_end_matches('/'));
         let fix_request = serde_json::json!({
@@ -1326,40 +1405,50 @@ async fn cluster_fix(hub_url: &str, job_id: &str, auto_confirm: bool) -> Result<
             "target_pid": pid,
             "action": "GracefulShutdown"
         });
-        
-        match client.post(&fix_url)
-            .json(&fix_request)
-            .send()
-            .await
-        {
+
+        match client.post(&fix_url).json(&fix_request).send().await {
             Ok(response) => {
                 if response.status().is_success() {
-                    println!("  ✅ 节点 {} PID {}: 命令已发送", 
-                        node_id.bright_cyan(), pid.to_string().bright_yellow());
+                    println!(
+                        "  ✅ 节点 {} PID {}: 命令已发送",
+                        node_id.bright_cyan(),
+                        pid.to_string().bright_yellow()
+                    );
                     success_count += 1;
                 } else {
                     let error_text = response.text().await.unwrap_or_default();
-                    eprintln!("  ❌ 节点 {} PID {}: 发送失败 - {}", 
-                        node_id.bright_red(), pid.to_string().bright_yellow(), error_text);
+                    eprintln!(
+                        "  ❌ 节点 {} PID {}: 发送失败 - {}",
+                        node_id.bright_red(),
+                        pid.to_string().bright_yellow(),
+                        error_text
+                    );
                     fail_count += 1;
                 }
             }
             Err(e) => {
-                eprintln!("  ❌ 节点 {} PID {}: 请求失败 - {}", 
-                    node_id.bright_red(), pid.to_string().bright_yellow(), e);
+                eprintln!(
+                    "  ❌ 节点 {} PID {}: 请求失败 - {}",
+                    node_id.bright_red(),
+                    pid.to_string().bright_yellow(),
+                    e
+                );
                 fail_count += 1;
             }
         }
     }
-    
+
     println!();
     if success_count > 0 {
-        println!("✅ 成功发送 {} 个修复命令", success_count.to_string().bright_green());
+        println!(
+            "✅ 成功发送 {} 个修复命令",
+            success_count.to_string().bright_green()
+        );
     }
     if fail_count > 0 {
         println!("❌ 失败 {} 个命令", fail_count.to_string().bright_red());
     }
-    
+
     Ok(())
 }
 
@@ -1374,34 +1463,40 @@ fn extract_node_and_pid(cause_str: &str) -> Option<(String, u32)> {
         let node_part = &cause_str[..pos];
         if let Some(pid_start) = cause_str[pos + 6..].find(|c: char| c.is_ascii_digit()) {
             let pid_str = &cause_str[pos + 6 + pid_start..];
-            let pid_end = pid_str.find(|c: char| !c.is_ascii_digit()).unwrap_or(pid_str.len());
+            let pid_end = pid_str
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(pid_str.len());
             if let Ok(pid) = pid_str[..pid_end].parse::<u32>() {
                 return Some((node_part.to_string(), pid));
             }
         }
     }
-    
+
     // 尝试匹配 "node-xxx: pid-yyy" 格式（单冒号）
     if let Some(node_end) = cause_str.find(": pid-") {
         let node_part = cause_str[..node_end].trim();
         let pid_start = node_end + 6;
         let pid_str = &cause_str[pid_start..];
-        let pid_end = pid_str.find(|c: char| !c.is_ascii_digit()).unwrap_or(pid_str.len());
+        let pid_end = pid_str
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(pid_str.len());
         if let Ok(pid) = pid_str[..pid_end].parse::<u32>() {
             return Some((node_part.to_string(), pid));
         }
     }
-    
+
     // 尝试匹配 "node-xxx pid-yyy" 格式（空格分隔）
     if let Some(node_end) = cause_str.find(" pid-") {
         let node_part = cause_str[..node_end].trim();
         let pid_start = node_end + 5;
         let pid_str = &cause_str[pid_start..];
-        let pid_end = pid_str.find(|c: char| !c.is_ascii_digit()).unwrap_or(pid_str.len());
+        let pid_end = pid_str
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(pid_str.len());
         if let Ok(pid) = pid_str[..pid_end].parse::<u32>() {
             return Some((node_part.to_string(), pid));
         }
     }
-    
+
     None
 }

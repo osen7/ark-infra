@@ -1,6 +1,6 @@
-use ark_core::graph::{EdgeType, StateGraph};
 use crate::scene::analyzer::SceneAnalyzer;
-use crate::scene::types::{AnalysisResult, SceneType, Severity};
+use crate::scene::types::{AnalysisResult, SceneType};
+use ark_core::graph::{EdgeType, StateGraph};
 
 /// NPU 亚健康场景分析器
 /// 检测 SOC 过温、HCCS 降级等亚健康状态
@@ -28,12 +28,16 @@ impl SceneAnalyzer for NpuSubhealthAnalyzer {
                         if let Some(temp) = node.metadata.get("temperature") {
                             if let Ok(temp_val) = temp.parse::<f64>() {
                                 if temp_val > 85.0 {
-                                    root_causes.push(format!("NPU {} SOC 过温: {:.1}°C", edge.to, temp_val));
-                                    recommendations.push(format!("检查 NPU {} 的散热系统", edge.to));
+                                    root_causes.push(format!(
+                                        "NPU {} SOC 过温: {:.1}°C",
+                                        edge.to, temp_val
+                                    ));
+                                    recommendations
+                                        .push(format!("检查 NPU {} 的散热系统", edge.to));
                                 }
                             }
                         }
-                        
+
                         // 检查 HCCS 降级
                         if let Some(hccs_status) = node.metadata.get("hccs_lane_status") {
                             if hccs_status == "degraded" || hccs_status.contains("降级") {
@@ -41,13 +45,18 @@ impl SceneAnalyzer for NpuSubhealthAnalyzer {
                                 recommendations.push(format!("检查 NPU {} 的 HCCS 连接", edge.to));
                             }
                         }
-                        
+
                         // 检查性能降频
                         if let Some(freq) = node.metadata.get("frequency") {
-                            if let (Ok(freq_val), Some(max_freq)) = (freq.parse::<f64>(), node.metadata.get("max_frequency")) {
+                            if let (Ok(freq_val), Some(max_freq)) =
+                                (freq.parse::<f64>(), node.metadata.get("max_frequency"))
+                            {
                                 if let Ok(max_freq_val) = max_freq.parse::<f64>() {
                                     if freq_val < max_freq_val * 0.9 {
-                                        root_causes.push(format!("NPU {} 频率降频: {:.0}MHz (最大: {:.0}MHz)", edge.to, freq_val, max_freq_val));
+                                        root_causes.push(format!(
+                                            "NPU {} 频率降频: {:.0}MHz (最大: {:.0}MHz)",
+                                            edge.to, freq_val, max_freq_val
+                                        ));
                                     }
                                 }
                             }
@@ -69,10 +78,11 @@ impl SceneAnalyzer for NpuSubhealthAnalyzer {
         recommended_actions.push("隔离亚健康节点，避免新任务调度到此节点".to_string());
         recommended_actions.push("联系硬件维护团队检查 NPU 硬件状态".to_string());
 
+        let confidence = if root_causes.len() > 1 { 0.85 } else { 0.7 };
         AnalysisResult {
             scene: SceneType::NpuSubhealth,
             root_causes,
-            confidence: if root_causes.len() > 1 { 0.85 } else { 0.7 },
+            confidence,
             recommendations,
             recommended_actions,
             severity: crate::scene::types::Severity::Warning, // 亚健康是警告级别

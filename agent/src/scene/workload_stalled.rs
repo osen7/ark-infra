@@ -1,6 +1,6 @@
-use ark_core::graph::{EdgeType, StateGraph};
 use crate::scene::analyzer::SceneAnalyzer;
-use crate::scene::types::{AnalysisResult, SceneType, Severity};
+use crate::scene::types::{AnalysisResult, SceneType};
+use ark_core::graph::{EdgeType, StateGraph};
 
 /// 工作负载卡死场景分析器
 /// 智能判断：进程 running 但资源利用率极低，且没有等待 IO
@@ -57,10 +57,13 @@ impl SceneAnalyzer for WorkloadStalledAnalyzer {
                     }
                 }
             }
-            
+
             // 检查是否有 WaitsOn IO
             if edge.from == target && edge.edge_type == EdgeType::WaitsOn {
-                if edge.to.contains("network") || edge.to.contains("storage") || edge.to.contains("disk") {
+                if edge.to.contains("network")
+                    || edge.to.contains("storage")
+                    || edge.to.contains("disk")
+                {
                     has_io_wait = true;
                 }
             }
@@ -72,7 +75,7 @@ impl SceneAnalyzer for WorkloadStalledAnalyzer {
             root_causes.push("进程处于死锁/卡死状态".to_string());
             root_causes.push(format!("所有 {} 个资源利用率均 < 1%", total_resources));
             root_causes.push("未检测到网络或存储 IO 等待".to_string());
-            
+
             recommendations.push("检查进程是否在等待锁或信号量".to_string());
             recommendations.push("检查进程是否在等待其他进程".to_string());
             recommendations.push("检查应用日志中的死锁信息".to_string());
@@ -91,7 +94,11 @@ impl SceneAnalyzer for WorkloadStalledAnalyzer {
         AnalysisResult {
             scene: SceneType::WorkloadStalled,
             root_causes,
-            confidence: if low_util_count == total_resources && !has_io_wait { 0.9 } else { 0.6 },
+            confidence: if low_util_count == total_resources && !has_io_wait {
+                0.9
+            } else {
+                0.6
+            },
             recommendations,
             recommended_actions,
             severity: crate::scene::types::Severity::Warning,

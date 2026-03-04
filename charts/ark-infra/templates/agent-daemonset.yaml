@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "ark-infra.fullname" . }}-agent
+  labels:
+    app.kubernetes.io/name: {{ include "ark-infra.name" . }}
+    app.kubernetes.io/component: agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "ark-infra.name" . }}
+      app.kubernetes.io/component: agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "ark-infra.name" . }}
+        app.kubernetes.io/component: agent
+    spec:
+      hostNetwork: {{ .Values.agent.hostNetwork }}
+      hostPID: {{ .Values.agent.hostPID }}
+      hostIPC: {{ .Values.agent.hostIPC }}
+      containers:
+        - name: agent
+          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          securityContext:
+            privileged: {{ .Values.agent.privileged }}
+          args:
+            - "run"
+            - "--hub-url"
+            - "{{ .Values.agent.hubUrl }}"
+            - "--probe"
+            - "{{ .Values.agent.probePath }}"
+          env:
+            - name: RUST_LOG
+              value: "info"
+            - name: ARK_RDMA_MOCK_FILE
+              value: "examples/mock/rdma/events-pfc-storm.jsonl"
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          volumeMounts:
+            - name: ipc-socket
+              mountPath: /var/run/ark
+      volumes:
+        - name: ipc-socket
+          hostPath:
+            path: /var/run/ark
+            type: DirectoryOrCreate
+      tolerations:
+        - operator: Exists

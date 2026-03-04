@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// 规则数据结构
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -18,12 +17,12 @@ pub struct Rule {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ComparisonOp {
-    Gt,   // 大于
-    Lt,   // 小于
-    Eq,   // 等于
-    Gte,  // 大于等于
-    Lte,  // 小于等于
-    Ne,   // 不等于
+    Gt,       // 大于
+    Lt,       // 小于
+    Eq,       // 等于
+    Gte,      // 大于等于
+    Lte,      // 小于等于
+    Ne,       // 不等于
     Contains, // 包含（字符串）
 }
 
@@ -31,9 +30,9 @@ pub enum ComparisonOp {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ValueType {
-    Numeric,  // 数值类型
-    String,   // 字符串类型
-    Auto,     // 自动检测
+    Numeric, // 数值类型
+    String,  // 字符串类型
+    Auto,    // 自动检测
 }
 
 /// 指标条件（用于节点 metadata 匹配）
@@ -72,20 +71,16 @@ pub enum Condition {
     /// 节点指标条件（新增：支持 metadata 匹配）
     #[serde(rename = "metric")]
     Metric {
-        node_type: Option<String>,  // Process, Resource, Error
+        node_type: Option<String>, // Process, Resource, Error
         entity_id_pattern: Option<String>,
         metrics: Vec<MetricCondition>,
     },
     /// 任意条件（OR 逻辑）
     #[serde(rename = "any")]
-    Any {
-        conditions: Vec<Condition>,
-    },
+    Any { conditions: Vec<Condition> },
     /// 所有条件（AND 逻辑）
     #[serde(rename = "all")]
-    All {
-        conditions: Vec<Condition>,
-    },
+    All { conditions: Vec<Condition> },
 }
 
 /// 根因模式

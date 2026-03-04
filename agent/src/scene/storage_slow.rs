@@ -1,6 +1,6 @@
-use ark_core::graph::{EdgeType, StateGraph};
 use crate::scene::analyzer::SceneAnalyzer;
 use crate::scene::types::{AnalysisResult, SceneType, Severity};
+use ark_core::graph::{EdgeType, StateGraph};
 
 /// 存储慢速场景分析器
 pub struct StorageSlowAnalyzer;
@@ -20,34 +20,46 @@ impl SceneAnalyzer for StorageSlowAnalyzer {
 
         // 查找 WaitsOn 存储的边，并检查 IOPS 和延迟
         let mut slow_storage = Vec::new();
-        
+
         for edge in &edges {
             if edge.from == target && edge.edge_type == EdgeType::WaitsOn {
-                if edge.to.contains("storage") || edge.to.contains("disk") || edge.to.contains("nvme") {
+                if edge.to.contains("storage")
+                    || edge.to.contains("disk")
+                    || edge.to.contains("nvme")
+                {
                     if let Some(node) = nodes.get(&edge.to) {
                         // 检查 IOPS（如果低于阈值）
                         if let Some(iops) = node.metadata.get("iops") {
                             if let Ok(iops_val) = iops.parse::<f64>() {
                                 if iops_val < 100.0 {
-                                    slow_storage.push((edge.to.clone(), format!("IOPS 过低: {:.0}", iops_val)));
+                                    slow_storage.push((
+                                        edge.to.clone(),
+                                        format!("IOPS 过低: {:.0}", iops_val),
+                                    ));
                                 }
                             }
                         }
-                        
+
                         // 检查 IO 延迟
                         if let Some(latency) = node.metadata.get("latency_ms") {
                             if let Ok(latency_val) = latency.parse::<f64>() {
                                 if latency_val > 100.0 {
-                                    slow_storage.push((edge.to.clone(), format!("IO 延迟过高: {:.1}ms", latency_val)));
+                                    slow_storage.push((
+                                        edge.to.clone(),
+                                        format!("IO 延迟过高: {:.1}ms", latency_val),
+                                    ));
                                 }
                             }
                         }
-                        
+
                         // 检查队列深度
                         if let Some(qdepth) = node.metadata.get("qdepth") {
                             if let Ok(qdepth_val) = qdepth.parse::<f64>() {
                                 if qdepth_val > 100.0 {
-                                    slow_storage.push((edge.to.clone(), format!("队列深度过高: {:.0}", qdepth_val)));
+                                    slow_storage.push((
+                                        edge.to.clone(),
+                                        format!("队列深度过高: {:.0}", qdepth_val),
+                                    ));
                                 }
                             }
                         }

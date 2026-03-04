@@ -2,25 +2,25 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SceneType {
     // GPU 相关
-    GpuOom,              // GPU OOM
-    GpuUtilLow,          // GPU 利用率低
-    GpuError,            // GPU 硬件错误
-    
+    GpuOom,     // GPU OOM
+    GpuUtilLow, // GPU 利用率低
+    GpuError,   // GPU 硬件错误
+
     // NPU 相关（ky 平台）
-    NpuSubhealth,        // NPU 亚健康
-    WorkloadStalled,     // 工作负载卡死
-    
+    NpuSubhealth,    // NPU 亚健康
+    WorkloadStalled, // 工作负载卡死
+
     // 网络相关
-    NetworkStall,        // 网络阻塞
-    NetworkDrop,         // 网络丢包
-    
+    NetworkStall, // 网络阻塞
+    NetworkDrop,  // 网络丢包
+
     // 存储相关
-    StorageIoError,      // 存储 IO 错误
-    StorageSlow,         // 存储慢
-    
+    StorageIoError, // 存储 IO 错误
+    StorageSlow,    // 存储慢
+
     // 进程相关
-    ProcessBlocked,      // 进程阻塞
-    ProcessCrash,        // 进程崩溃
+    ProcessBlocked, // 进程阻塞
+    ProcessCrash,   // 进程崩溃
 }
 
 impl SceneType {
@@ -57,9 +57,9 @@ pub struct AnalysisResult {
 /// 严重程度
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Severity {
-    Critical,  // 严重：进程崩溃、硬件错误
-    Warning,   // 警告：亚健康、性能下降
-    Info,      // 信息：正常状态变化
+    Critical, // 严重：进程崩溃、硬件错误
+    Warning,  // 警告：亚健康、性能下降
+    Info,     // 信息：正常状态变化
 }
 
 impl Default for Severity {

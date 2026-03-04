@@ -1,23 +1,22 @@
 use crate::event::{Event, EventType};
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 /// 三大推导边类型
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EdgeType {
-    Consumes,   // 进程 PID 消耗某物理资源
-    WaitsOn,    // 进程 PID 正在等待某网络/存储资源完成
-    BlockedBy,  // 资源/进程被某个 Error 彻底阻塞（根因）
+    Consumes,  // 进程 PID 消耗某物理资源
+    WaitsOn,   // 进程 PID 正在等待某网络/存储资源完成
+    BlockedBy, // 资源/进程被某个 Error 彻底阻塞（根因）
 }
 
 /// 图中的边
 #[derive(Debug, Clone)]
 pub struct Edge {
     pub edge_type: EdgeType,
-    pub from: String,  // 源节点ID
-    pub to: String,    // 目标节点ID
-    pub ts: u64,       // 事件时间戳
+    pub from: String, // 源节点ID
+    pub to: String,   // 目标节点ID
+    pub ts: u64,      // 事件时间戳
 }
 
 /// 节点状态
@@ -122,7 +121,8 @@ impl StateGraph {
             } else if event.value == "exit" || event.value == "zombie" {
                 // 移除进程节点（或标记为已退出）
                 if let Some(node) = nodes.get_mut(&pid_str) {
-                    node.metadata.insert("state".to_string(), event.value.clone());
+                    node.metadata
+                        .insert("state".to_string(), event.value.clone());
                     node.last_update = event.ts;
                 }
             }
@@ -151,7 +151,8 @@ impl StateGraph {
 
         // 更新资源状态
         if let Some(node) = nodes.get_mut(&resource_id) {
-            node.metadata.insert("util".to_string(), event.value.clone());
+            node.metadata
+                .insert("util".to_string(), event.value.clone());
             node.last_update = event.ts;
         }
 
@@ -159,7 +160,7 @@ impl StateGraph {
         if let Some(pid) = event.pid {
             let pid_str = format!("pid-{}", pid);
             let pid_str = self.namespace_node_id(event, &pid_str);
-            
+
             // 确保进程节点存在
             if !nodes.contains_key(&pid_str) {
                 nodes.insert(
@@ -175,9 +176,7 @@ impl StateGraph {
 
             // 检查是否已存在相同的边
             let edge_exists = edges.iter().any(|e| {
-                e.edge_type == EdgeType::Consumes
-                    && e.from == pid_str
-                    && e.to == event.entity_id
+                e.edge_type == EdgeType::Consumes && e.from == pid_str && e.to == resource_id
             });
 
             if !edge_exists {
@@ -253,7 +252,7 @@ impl StateGraph {
             if pid > 0 {
                 let pid_str = format!("pid-{}", pid);
                 let pid_str = self.namespace_node_id(event, &pid_str);
-                
+
                 // 确保进程节点存在
                 if !nodes.contains_key(&pid_str) {
                     nodes.insert(
@@ -273,9 +272,7 @@ impl StateGraph {
 
                 // 检查是否已存在 WaitsOn 边
                 let edge_exists = edges.iter().any(|e| {
-                    e.edge_type == EdgeType::WaitsOn
-                        && e.from == pid_str
-                        && e.to == resource_id
+                    e.edge_type == EdgeType::WaitsOn && e.from == pid_str && e.to == resource_id
                 });
 
                 if !edge_exists {
@@ -285,7 +282,7 @@ impl StateGraph {
                         to: resource_id.clone(),
                         ts: event.ts,
                     });
-                    
+
                     // 日志输出（用于调试）
                     eprintln!(
                         "🔗 [图引擎] 建立阻塞关联: {} WaitsOn {} (transport.drop)",
@@ -298,14 +295,13 @@ impl StateGraph {
         // 处理 TransportBw 事件（带宽低时也可能阻塞）
         if event.event_type == EventType::TransportBw {
             if let Some(pid) = event.pid {
-                let should_create_waitson = 
-                    event.value.contains("IO_WAIT") || 
-                    event.value.parse::<f64>().unwrap_or(1000.0) < 1.0;
+                let should_create_waitson = event.value.contains("IO_WAIT")
+                    || event.value.parse::<f64>().unwrap_or(1000.0) < 1.0;
 
                 if should_create_waitson {
                     let pid_str = format!("pid-{}", pid);
                     let pid_str = self.namespace_node_id(event, &pid_str);
-                    
+
                     if !nodes.contains_key(&pid_str) {
                         nodes.insert(
                             pid_str.clone(),
@@ -319,9 +315,7 @@ impl StateGraph {
                     }
 
                     let edge_exists = edges.iter().any(|e| {
-                        e.edge_type == EdgeType::WaitsOn
-                            && e.from == pid_str
-                            && e.to == resource_id
+                        e.edge_type == EdgeType::WaitsOn && e.from == pid_str && e.to == resource_id
                     });
 
                     if !edge_exists {
@@ -352,7 +346,7 @@ impl StateGraph {
 
         let error_id_base = format!("error-{}", event.entity_id);
         let error_id = self.namespace_node_id(event, &error_id_base);
-        
+
         // 创建错误节点
         if !nodes.contains_key(&error_id) {
             nodes.insert(
@@ -376,18 +370,14 @@ impl StateGraph {
         let affected_pids: Vec<String> = {
             edges
                 .iter()
-                .filter(|e| {
-                    e.edge_type == EdgeType::Consumes && e.to == resource_id
-                })
+                .filter(|e| e.edge_type == EdgeType::Consumes && e.to == resource_id)
                 .map(|e| e.from.clone())
                 .collect()
         };
 
         for pid_str in affected_pids {
             let edge_exists = edges.iter().any(|e| {
-                e.edge_type == EdgeType::BlockedBy
-                    && e.from == pid_str
-                    && e.to == error_id
+                e.edge_type == EdgeType::BlockedBy && e.from == pid_str && e.to == error_id
             });
 
             if !edge_exists {
@@ -419,9 +409,7 @@ impl StateGraph {
         // 移除过期的错误节点
         let error_ids: Vec<String> = nodes
             .iter()
-            .filter(|(_, node)| {
-                node.node_type == NodeType::Error && node.last_update < cutoff_ts
-            })
+            .filter(|(_, node)| node.node_type == NodeType::Error && node.last_update < cutoff_ts)
             .map(|(id, _)| id.clone())
             .collect();
 
@@ -430,9 +418,7 @@ impl StateGraph {
         }
 
         // 移除相关的 BlockedBy 边
-        edges.retain(|e| {
-            !(e.edge_type == EdgeType::BlockedBy && error_ids.contains(&e.to))
-        });
+        edges.retain(|e| !(e.edge_type == EdgeType::BlockedBy && error_ids.contains(&e.to)));
 
         // 清理非活跃进程（超过10分钟未更新）
         // 重要：只清理明确标记为 exit/zombie 的进程，不清理稳态运行的进程
@@ -444,15 +430,15 @@ impl StateGraph {
                 if node.node_type != NodeType::Process {
                     return false;
                 }
-                
+
                 // 只清理明确退出的进程，或者长时间未更新且状态不是 running 的进程
                 let state = node.metadata.get("state");
-                let is_explicitly_dead = state == Some(&"exit".to_string()) 
-                    || state == Some(&"zombie".to_string());
-                
-                let is_stale_non_running = node.last_update < process_cutoff
-                    && state != Some(&"running".to_string());
-                
+                let is_explicitly_dead =
+                    state == Some(&"exit".to_string()) || state == Some(&"zombie".to_string());
+
+                let is_stale_non_running =
+                    node.last_update < process_cutoff && state != Some(&"running".to_string());
+
                 is_explicitly_dead || is_stale_non_running
             })
             .map(|(id, _)| id.clone())
@@ -463,9 +449,7 @@ impl StateGraph {
         }
 
         // 清理相关的边
-        edges.retain(|e| {
-            !dead_pids.contains(&e.from) && !dead_pids.contains(&e.to)
-        });
+        edges.retain(|e| !dead_pids.contains(&e.from) && !dead_pids.contains(&e.to));
 
         // 注意：资源节点（Resource）不会被清理，即使长时间没有更新
         // 因为资源可能处于稳态（如 GPU 利用率保持 100%），需要探针发送心跳事件来维持
@@ -491,9 +475,7 @@ impl StateGraph {
         let edges = self.edges.read().await;
         edges
             .iter()
-            .filter(|e| {
-                e.edge_type == EdgeType::Consumes && e.from == pid_str
-            })
+            .filter(|e| e.edge_type == EdgeType::Consumes && e.from == pid_str)
             .map(|e| e.to.clone())
             .collect()
     }
@@ -512,12 +494,12 @@ impl StateGraph {
         let mut visited = HashSet::new();
         let mut causes = Vec::new();
 
-        self.dfs_backward(node_id, &edges, &nodes, &mut visited, &mut causes).await;
+        self.dfs_backward(node_id, &edges, &nodes, &mut visited, &mut causes);
 
         causes
     }
 
-    async fn dfs_backward(
+    fn dfs_backward(
         &self,
         node_id: &str,
         edges: &[Edge],
@@ -545,7 +527,7 @@ impl StateGraph {
                         causes.push(error_desc);
                     }
                     // 继续递归查找
-                    self.dfs_backward(&edge.to, edges, nodes, visited, causes).await;
+                    self.dfs_backward(&edge.to, edges, nodes, visited, causes);
                 }
             }
         }

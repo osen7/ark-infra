@@ -4,10 +4,10 @@ mod fix_engine;
 
 pub use action::ActionType;
 pub use executor::ActionExecutor;
-pub use fix_engine::{FixEngine, FixResult};
+pub use fix_engine::FixEngine;
 
-use async_trait::async_trait;
 use crate::plugin::Actuator;
+use async_trait::async_trait;
 use std::process::Stdio;
 use tokio::process::Command;
 
@@ -34,16 +34,12 @@ impl Actuator for SystemActuator {
 
     async fn execute(&self, target_pid: u32, action: &str) -> Result<(), String> {
         match action {
-            "kill" | "zap" => {
-                self.kill_process_tree(target_pid).await
-            }
+            "kill" | "zap" => self.kill_process_tree(target_pid).await,
             "reset" => {
                 // 重置操作（未来可扩展）
                 Err("重置操作尚未实现".to_string())
             }
-            _ => {
-                Err(format!("未知动作: {}", action))
-            }
+            _ => Err(format!("未知动作: {}", action)),
         }
     }
 }
@@ -80,11 +76,11 @@ impl SystemActuator {
         {
             // 首先尝试获取进程组 ID
             let pgid_result = self.get_process_group(pid).await;
-            
+
             if let Ok(pgid) = pgid_result {
                 // 使用 kill 命令终止整个进程组
                 let output = Command::new("kill")
-                    .args(&["-9", &format!("-{}", pgid)])
+                    .args(["-9", &format!("-{}", pgid)])
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
                     .output()
@@ -101,7 +97,7 @@ impl SystemActuator {
             } else {
                 // 如果无法获取进程组，直接 kill 主进程
                 let output = Command::new("kill")
-                    .args(&["-9", &pid.to_string()])
+                    .args(["-9", &pid.to_string()])
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
                     .output()
@@ -129,7 +125,7 @@ impl SystemActuator {
     #[cfg(unix)]
     async fn get_process_group(&self, pid: u32) -> Result<u32, String> {
         use std::fs;
-        
+
         // 读取 /proc/{pid}/stat 获取进程组 ID
         let stat_path = format!("/proc/{}/stat", pid);
         let stat_content = fs::read_to_string(&stat_path)

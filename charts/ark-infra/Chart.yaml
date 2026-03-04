@@ -1,0 +1,6 @@
+apiVersion: v2
+name: ark-infra
+description: Ark Infra helm chart (hub + agent)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

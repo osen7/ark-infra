@@ -60,6 +60,11 @@ cargo run -p ark --release -- run --hub-url ws://localhost:8080
 cargo run -p ark --release -- cluster ps --hub http://localhost:8081
 cargo run -p ark --release -- cluster why job-1234 --hub http://localhost:8081
 cargo run -p ark --release -- cluster fix job-1234 --hub http://localhost:8081
+
+# 诊断与稳定性接口（Hub）
+curl 'http://localhost:8081/api/v1/diagnose?job_id=job-1234&window_s=120'
+curl 'http://localhost:8081/api/v1/preflight?node_id=node-a&window_s=120'
+curl 'http://localhost:8081/api/v1/training_slow?job_id=job-1234&window_s=120'
 ```
 
 ### ☸️ Kubernetes 部署（生产环境推荐）
@@ -96,6 +101,19 @@ kubectl get clusterrolebinding ark-hub-controller-binding
 - [eBPF CO-RE 实现](ark-probe-ebpf/CO-RE_IMPLEMENTATION.md) - CO-RE 四元组提取指南
 - [Kubernetes 部署](deploy/README.md) - 生产级 K8s 部署指南（含 RBAC 配置）
 - [探针开发](examples/README.md) - 如何开发自定义探针
+- [贡献指南](CONTRIBUTING.md) - 开发与提交流程
+- [安全策略](SECURITY.md) - 漏洞披露与安全注意事项
+- [发布指南](RELEASE.md) - 版本发布流程
+
+## 🛠️ 开发命令
+
+```bash
+make fmt
+make lint
+make test
+make helm-lint
+make demo
+```
 
 ## 🏗️ 架构设计
 

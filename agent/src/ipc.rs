@@ -1,13 +1,13 @@
 use ark_core::graph::StateGraph;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-#[cfg(unix)]
-use tokio::net::{UnixListener, UnixStream};
 #[cfg(windows)]
 use tokio::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
 
 /// RPC 请求类型
 #[derive(Debug, Serialize, Deserialize)]
@@ -109,7 +109,7 @@ impl IpcServer {
         }
 
         let listener = UnixListener::bind(&self.socket_path)?;
-        
+
         // 设置 Socket 文件权限：rw-rw---- (660)
         // 只允许 owner 和 group 读写
         #[cfg(unix)]
@@ -118,8 +118,11 @@ impl IpcServer {
             let perms = std::fs::Permissions::from_mode(0o660);
             std::fs::set_permissions(&self.socket_path, perms)?;
         }
-        
-        println!("[ark] IPC 服务器已启动，监听 Unix Socket: {}", self.socket_path.display());
+
+        println!(
+            "[ark] IPC 服务器已启动，监听 Unix Socket: {}",
+            self.socket_path.display()
+        );
 
         loop {
             match listener.accept().await {
@@ -142,7 +145,7 @@ impl IpcServer {
     pub async fn serve(&self) -> Result<(), Box<dyn std::error::Error>> {
         let addr = format!("127.0.0.1:{}", self.port);
         let listener = TcpListener::bind(&addr).await?;
-        
+
         println!("[ark] IPC 服务器已启动，监听 TCP: {}", addr);
 
         loop {
@@ -180,8 +183,6 @@ async fn handle_client_unix(
     mut stream: UnixStream,
     graph: Arc<StateGraph>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut buf = vec![0u8; 4096];
-
     // 最大请求体大小：10MB（防止 OOM 攻击）
     const MAX_REQUEST_SIZE: u32 = 10 * 1024 * 1024;
 
@@ -324,9 +325,7 @@ async fn handle_request(
                 "causes": causes,
             }))
         }
-        RpcRequest::Ping => {
-            Ok(json!({"status": "ok"}))
-        }
+        RpcRequest::Ping => Ok(json!({"status": "ok"})),
     }
 }
 
@@ -408,8 +407,8 @@ impl IpcClient {
         let mut stream = self.connect().await?;
 
         // 序列化请求
-        let request_json = serde_json::to_vec(&request)
-            .map_err(|e| format!("序列化请求失败: {}", e))?;
+        let request_json =
+            serde_json::to_vec(&request).map_err(|e| format!("序列化请求失败: {}", e))?;
 
         // 发送请求长度和内容
         stream
@@ -448,8 +447,8 @@ impl IpcClient {
             .map_err(|e| format!("读取响应内容失败: {}", e))?;
 
         // 解析响应
-        let response: RpcResponse = serde_json::from_slice(&response_buf)
-            .map_err(|e| format!("解析响应失败: {}", e))?;
+        let response: RpcResponse =
+            serde_json::from_slice(&response_buf).map_err(|e| format!("解析响应失败: {}", e))?;
 
         Ok(response)
     }
@@ -457,15 +456,14 @@ impl IpcClient {
     /// 查询进程列表
     pub async fn list_processes(&self) -> Result<Vec<serde_json::Value>, String> {
         let response = self.call(RpcRequest::ListProcesses).await?;
-        
+
         if !response.success {
             return Err(response.error.unwrap_or_else(|| "未知错误".to_string()));
         }
 
-        let processes: Vec<serde_json::Value> = serde_json::from_value(
-            response.data.ok_or_else(|| "响应数据为空".to_string())?,
-        )
-        .map_err(|e| format!("解析进程列表失败: {}", e))?;
+        let processes: Vec<serde_json::Value> =
+            serde_json::from_value(response.data.ok_or_else(|| "响应数据为空".to_string())?)
+                .map_err(|e| format!("解析进程列表失败: {}", e))?;
 
         Ok(processes)
     }
@@ -473,7 +471,7 @@ impl IpcClient {
     /// 查询进程阻塞根因
     pub async fn why_process(&self, pid: u32) -> Result<Vec<String>, String> {
         let response = self.call(RpcRequest::WhyProcess { pid }).await?;
-        
+
         if !response.success {
             return Err(response.error.unwrap_or_else(|| "未知错误".to_string()));
         }

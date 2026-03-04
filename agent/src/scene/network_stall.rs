@@ -1,6 +1,6 @@
-use ark_core::graph::{EdgeType, StateGraph};
 use crate::scene::analyzer::SceneAnalyzer;
 use crate::scene::types::{AnalysisResult, SceneType};
+use ark_core::graph::{EdgeType, StateGraph};
 
 /// 网络阻塞场景分析器
 pub struct NetworkStallAnalyzer;
@@ -25,12 +25,13 @@ impl SceneAnalyzer for NetworkStallAnalyzer {
                 if edge.to.starts_with("network-") || edge.to.contains("net") {
                     network_wait_count += 1;
                     root_causes.push(format!("等待网络资源: {}", edge.to));
-                    
+
                     if let Some(node) = nodes.get(&edge.to) {
                         if let Some(drop_rate) = node.metadata.get("drop_rate") {
                             if let Ok(rate) = drop_rate.parse::<f64>() {
                                 if rate > 10.0 {
-                                    root_causes.push(format!("网络 {} 丢包率过高: {:.1}%", edge.to, rate));
+                                    root_causes
+                                        .push(format!("网络 {} 丢包率过高: {:.1}%", edge.to, rate));
                                 }
                             }
                         }

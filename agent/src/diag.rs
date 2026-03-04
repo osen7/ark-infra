@@ -1,8 +1,6 @@
 use crate::ipc::IpcClient;
 use ark_core::rules::RuleEngine;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// 诊断结果
@@ -27,6 +25,7 @@ impl LlmProvider {
         match s.to_lowercase().as_str() {
             "openai" | "gpt" => LlmProvider::OpenAI,
             "claude" | "anthropic" => LlmProvider::Claude,
+            "local" | "ollama" => LlmProvider::Local,
             _ => LlmProvider::OpenAI, // 默认
         }
     }
@@ -63,16 +62,12 @@ impl LlmClient {
             .unwrap_or(LlmProvider::OpenAI);
 
         let api_key = match provider {
-            LlmProvider::OpenAI => {
-                std::env::var("OPENAI_API_KEY")
-                    .or_else(|_| std::env::var("XCTL_OPENAI_API_KEY"))
-                    .map_err(|_| "未设置 OPENAI_API_KEY 环境变量".to_string())?
-            }
-            LlmProvider::Claude => {
-                std::env::var("ANTHROPIC_API_KEY")
-                    .or_else(|_| std::env::var("XCTL_ANTHROPIC_API_KEY"))
-                    .map_err(|_| "未设置 ANTHROPIC_API_KEY 环境变量".to_string())?
-            }
+            LlmProvider::OpenAI => std::env::var("OPENAI_API_KEY")
+                .or_else(|_| std::env::var("XCTL_OPENAI_API_KEY"))
+                .map_err(|_| "未设置 OPENAI_API_KEY 环境变量".to_string())?,
+            LlmProvider::Claude => std::env::var("ANTHROPIC_API_KEY")
+                .or_else(|_| std::env::var("XCTL_ANTHROPIC_API_KEY"))
+                .map_err(|_| "未设置 ANTHROPIC_API_KEY 环境变量".to_string())?,
             LlmProvider::Local => "".to_string(), // 本地模型不需要 API key
         };
 
@@ -125,8 +120,9 @@ impl LlmClient {
             .map_err(|e| format!("API 请求失败: {}", e))?;
 
         if !response.status().is_success() {
+            let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("API 错误: {} - {}", response.status(), error_text));
+            return Err(format!("API 错误: {} - {}", status, error_text));
         }
 
         let json: serde_json::Value = response
@@ -164,8 +160,9 @@ impl LlmClient {
             .map_err(|e| format!("API 请求失败: {}", e))?;
 
         if !response.status().is_success() {
+            let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("API 错误: {} - {}", response.status(), error_text));
+            return Err(format!("API 错误: {} - {}", status, error_text));
         }
 
         let json: serde_json::Value = response
@@ -196,8 +193,9 @@ impl LlmClient {
             .map_err(|e| format!("API 请求失败: {}", e))?;
 
         if !response.status().is_success() {
+            let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("API 错误: {} - {}", response.status(), error_text));
+            return Err(format!("API 错误: {} - {}", status, error_text));
         }
 
         let json: serde_json::Value = response
@@ -230,7 +228,7 @@ fn build_diagnosis_prompt(
         for (idx, cause) in causes.iter().enumerate() {
             prompt.push_str(&format!("{}. {}\n", idx + 1, cause));
         }
-        prompt.push_str("\n");
+        prompt.push('\n');
     }
 
     // 添加相关进程信息
@@ -255,7 +253,7 @@ fn build_diagnosis_prompt(
                 proc_pid, state, resources
             ));
         }
-        prompt.push_str("\n");
+        prompt.push('\n');
     }
 
     prompt.push_str(
@@ -310,10 +308,10 @@ pub async fn run_diagnosis(
             // 注意：这里我们需要获取图状态，但当前 IPC 接口不直接提供
             // 为了简化，我们基于根因分析结果来匹配规则
             // 未来可以扩展 IPC 接口以获取更详细的图状态
-            
+
             // 创建虚拟事件列表（从根因和进程信息中提取）
             let virtual_events = extract_virtual_events_from_causes(&causes, &processes);
-            
+
             // 尝试匹配规则（需要图状态，这里先跳过图条件匹配）
             // 简化版本：只匹配事件条件
             if let Some(rule) = rule_engine.match_first_simple(&virtual_events).await {
@@ -322,7 +320,7 @@ pub async fn run_diagnosis(
                 recommendation.push_str(&format!("【规则匹配: {}】\n\n", rule.name));
                 recommendation.push_str(&format!("根因: {}\n\n", rule.root_cause_pattern.primary));
                 recommendation.push_str("解决方案:\n");
-                
+
                 for step in &rule.solution_steps {
                     recommendation.push_str(&format!("{}. {}\n", step.step, step.action));
                     if let Some(cmd) = &step.command {
@@ -332,7 +330,7 @@ pub async fn run_diagnosis(
                         recommendation.push_str("   [需要手动执行]\n");
                     }
                 }
-                
+
                 return Ok(Diagnosis {
                     pid,
                     causes,
@@ -347,16 +345,12 @@ pub async fn run_diagnosis(
     let llm_client = if let Some(provider_str) = llm_provider {
         let provider = LlmProvider::from_str(&provider_str);
         let api_key = match provider {
-            LlmProvider::OpenAI => {
-                std::env::var("OPENAI_API_KEY")
-                    .or_else(|_| std::env::var("XCTL_OPENAI_API_KEY"))
-                    .map_err(|_| "未设置 OPENAI_API_KEY 环境变量")?
-            }
-            LlmProvider::Claude => {
-                std::env::var("ANTHROPIC_API_KEY")
-                    .or_else(|_| std::env::var("XCTL_ANTHROPIC_API_KEY"))
-                    .map_err(|_| "未设置 ANTHROPIC_API_KEY 环境变量")?
-            }
+            LlmProvider::OpenAI => std::env::var("OPENAI_API_KEY")
+                .or_else(|_| std::env::var("XCTL_OPENAI_API_KEY"))
+                .map_err(|_| "未设置 OPENAI_API_KEY 环境变量")?,
+            LlmProvider::Claude => std::env::var("ANTHROPIC_API_KEY")
+                .or_else(|_| std::env::var("XCTL_ANTHROPIC_API_KEY"))
+                .map_err(|_| "未设置 ANTHROPIC_API_KEY 环境变量")?,
             LlmProvider::Local => "".to_string(),
         };
         LlmClient::new(provider, api_key)
@@ -399,10 +393,10 @@ pub async fn run_diagnosis(
             // 注意：这里我们需要获取图状态，但当前 IPC 接口不直接提供
             // 为了简化，我们基于根因分析结果来匹配规则
             // 未来可以扩展 IPC 接口以获取更详细的图状态
-            
+
             // 创建虚拟事件列表（从根因和进程信息中提取）
             let virtual_events = extract_virtual_events_from_causes(&causes, &processes);
-            
+
             // 尝试匹配规则（需要图状态，这里先跳过图条件匹配）
             // 简化版本：只匹配事件条件
             if let Some(rule) = rule_engine.match_first_simple(&virtual_events).await {
@@ -411,7 +405,7 @@ pub async fn run_diagnosis(
                 recommendation.push_str(&format!("【规则匹配: {}】\n\n", rule.name));
                 recommendation.push_str(&format!("根因: {}\n\n", rule.root_cause_pattern.primary));
                 recommendation.push_str("解决方案:\n");
-                
+
                 for step in &rule.solution_steps {
                     recommendation.push_str(&format!("{}. {}\n", step.step, step.action));
                     if let Some(cmd) = &step.command {
@@ -421,7 +415,7 @@ pub async fn run_diagnosis(
                         recommendation.push_str("   [需要手动执行]\n");
                     }
                 }
-                
+
                 return Ok(Diagnosis {
                     pid,
                     causes,
@@ -436,16 +430,12 @@ pub async fn run_diagnosis(
     let llm_client = if let Some(provider_str) = llm_provider {
         let provider = LlmProvider::from_str(&provider_str);
         let api_key = match provider {
-            LlmProvider::OpenAI => {
-                std::env::var("OPENAI_API_KEY")
-                    .or_else(|_| std::env::var("XCTL_OPENAI_API_KEY"))
-                    .map_err(|_| "未设置 OPENAI_API_KEY 环境变量")?
-            }
-            LlmProvider::Claude => {
-                std::env::var("ANTHROPIC_API_KEY")
-                    .or_else(|_| std::env::var("XCTL_ANTHROPIC_API_KEY"))
-                    .map_err(|_| "未设置 ANTHROPIC_API_KEY 环境变量")?
-            }
+            LlmProvider::OpenAI => std::env::var("OPENAI_API_KEY")
+                .or_else(|_| std::env::var("XCTL_OPENAI_API_KEY"))
+                .map_err(|_| "未设置 OPENAI_API_KEY 环境变量")?,
+            LlmProvider::Claude => std::env::var("ANTHROPIC_API_KEY")
+                .or_else(|_| std::env::var("XCTL_ANTHROPIC_API_KEY"))
+                .map_err(|_| "未设置 ANTHROPIC_API_KEY 环境变量")?,
             LlmProvider::Local => "".to_string(),
         };
         LlmClient::new(provider, api_key)
@@ -465,14 +455,14 @@ pub async fn run_diagnosis(
 fn extract_virtual_events_from_causes(
     causes: &[String],
     processes: &[serde_json::Value],
-) -> Vec<crate::event::Event> {
-    use crate::event::{Event, EventType};
+) -> Vec<ark_core::event::Event> {
+    use ark_core::event::{Event, EventType};
     use std::time::{SystemTime, UNIX_EPOCH};
-    
+
     let mut events = Vec::new();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()  // 如果系统时间异常，使用默认值 0
+        .unwrap_or_default() // 如果系统时间异常，使用默认值 0
         .as_millis() as u64;
 
     // 从根因中提取错误事件
@@ -485,6 +475,7 @@ fn extract_virtual_events_from_causes(
                 job_id: None,
                 pid: None,
                 value: cause.clone(),
+                node_id: None,
             });
         } else if cause.contains("network") || cause.contains("网络") {
             events.push(Event {
@@ -494,6 +485,7 @@ fn extract_virtual_events_from_causes(
                 job_id: None,
                 pid: None,
                 value: cause.clone(),
+                node_id: None,
             });
         }
     }
@@ -509,6 +501,7 @@ fn extract_virtual_events_from_causes(
                     job_id: None,
                     pid: proc["pid"].as_u64().map(|p| p as u32),
                     value: state.to_string(),
+                    node_id: None,
                 });
             }
         }

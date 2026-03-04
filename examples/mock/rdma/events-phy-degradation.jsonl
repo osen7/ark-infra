@@ -1,0 +1,5 @@
+{"ts":1741234700000,"event_type":"process.state","entity_id":"proc-5002","job_id":"job-rdma-demo","pid":5002,"value":"start","node_id":"node-b"}
+{"ts":1741234701000,"event_type":"transport.bw","entity_id":"roce-mlx5_1","job_id":"job-rdma-demo","pid":5002,"value":"41.0","node_id":"node-b"}
+{"ts":1741234702000,"event_type":"transport.drop","entity_id":"roce-mlx5_1","job_id":"job-rdma-demo","pid":5002,"value":"14.8","node_id":"node-b"}
+{"ts":1741234703000,"event_type":"error.net","entity_id":"roce-mlx5_1","job_id":"job-rdma-demo","pid":5002,"value":"phy_degradation","node_id":"node-b"}
+{"ts":1741234704000,"event_type":"error.net","entity_id":"roce-mlx5_1","job_id":"job-rdma-demo","pid":5002,"value":"link_flap","node_id":"node-b"}

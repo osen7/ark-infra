@@ -1,6 +1,6 @@
-use ark_core::graph::{EdgeType, StateGraph};
 use crate::scene::analyzer::SceneAnalyzer;
 use crate::scene::types::{AnalysisResult, SceneType, Severity};
+use ark_core::graph::{EdgeType, StateGraph};
 
 /// GPU 利用率低场景分析器
 /// 检测 GPU 空闲或利用率极低的情况
@@ -37,7 +37,7 @@ impl SceneAnalyzer for GpuUtilLowAnalyzer {
                     }
                 }
             }
-            
+
             // 检查是否有 WaitsOn（可能等待数据）
             if edge.from == target && edge.edge_type == EdgeType::WaitsOn {
                 has_waits_on = true;
@@ -48,7 +48,7 @@ impl SceneAnalyzer for GpuUtilLowAnalyzer {
             for (gpu_id, util) in &low_util_gpus {
                 root_causes.push(format!("{} 利用率极低: {:.1}%", gpu_id, util));
             }
-            
+
             if has_waits_on {
                 root_causes.push("进程可能在等待数据加载或网络传输".to_string());
                 recommendations.push("检查数据加载速度".to_string());

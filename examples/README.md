@@ -59,6 +59,33 @@ cargo run -- run --probe examples/ark-probe-network.py
 cargo run -- run --probe examples/ark-probe-dummy.py
 ```
 
+### 5. mock/rdma（回归基线数据）
+
+用于 RDMA 规则和诊断链路测试的 JSONL 样例：
+- `examples/mock/rdma/events-baseline.jsonl`
+- `examples/mock/rdma/events-pfc-storm.jsonl`
+- `examples/mock/rdma/events-phy-degradation.jsonl`
+
+这些样例可被 mock probe 逐行输出，验证 agent/hub 端到端行为。
+
+### 6. ark-probe-rdma-mock.py（RDMA 回放探针）
+
+把 `examples/mock/rdma/*.jsonl` 逐行回放到 stdout，用于本地联调和集成测试。
+
+**使用**:
+```bash
+cargo run -- run --probe examples/ark-probe-rdma-mock.py
+```
+
+可选参数：
+- `--interval 0.5` 控制回放间隔（秒）
+- `--loop` 循环回放
+
+由于 `ark run --probe` 当前只接收脚本路径，如需切换文件/间隔请使用环境变量：
+- `ARK_RDMA_MOCK_FILE`（默认 `examples/mock/rdma/events-pfc-storm.jsonl`）
+- `ARK_RDMA_MOCK_INTERVAL`（默认 `0.5`）
+- `ARK_RDMA_MOCK_LOOP`（`1/true` 开启循环）
+
 ## 探针开发指南
 
 ### 探针接口规范

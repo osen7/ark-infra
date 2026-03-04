@@ -1,6 +1,6 @@
-use ark_core::graph::{EdgeType, StateGraph};
 use crate::scene::analyzer::SceneAnalyzer;
 use crate::scene::types::{AnalysisResult, SceneType, Severity};
+use ark_core::graph::{EdgeType, StateGraph};
 
 /// 存储 IO 错误场景分析器
 pub struct StorageIoErrorAnalyzer;
@@ -21,7 +21,10 @@ impl SceneAnalyzer for StorageIoErrorAnalyzer {
         // 查找存储相关的错误
         for edge in &edges {
             if edge.from == target && edge.edge_type == EdgeType::BlockedBy {
-                if edge.to.contains("storage") || edge.to.contains("disk") || edge.to.contains("nvme") {
+                if edge.to.contains("storage")
+                    || edge.to.contains("disk")
+                    || edge.to.contains("nvme")
+                {
                     if let Some(node) = nodes.get(&edge.to) {
                         if let Some(error_type) = node.metadata.get("error_type") {
                             root_causes.push(format!("存储错误: {}", error_type));
@@ -31,7 +34,7 @@ impl SceneAnalyzer for StorageIoErrorAnalyzer {
                     }
                 }
             }
-            
+
             // 查找 WaitsOn 存储的边
             if edge.from == target && edge.edge_type == EdgeType::WaitsOn {
                 if edge.to.contains("storage") || edge.to.contains("disk") {

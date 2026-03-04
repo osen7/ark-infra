@@ -1,6 +1,6 @@
-use ark_core::graph::{EdgeType, StateGraph};
 use crate::scene::analyzer::SceneAnalyzer;
 use crate::scene::types::{AnalysisResult, SceneType};
+use ark_core::graph::{EdgeType, StateGraph};
 
 /// GPU OOM 场景分析器
 pub struct GpuOomAnalyzer;
@@ -42,8 +42,12 @@ impl SceneAnalyzer for GpuOomAnalyzer {
                         if let Some(mem_usage) = node.metadata.get("mem_usage") {
                             if let Ok(usage) = mem_usage.parse::<f64>() {
                                 if usage > 95.0 {
-                                    root_causes.push(format!("GPU {} 显存使用率过高: {:.1}%", edge.to, usage));
-                                    recommendations.push(format!("检查 GPU {} 上的进程显存使用", edge.to));
+                                    root_causes.push(format!(
+                                        "GPU {} 显存使用率过高: {:.1}%",
+                                        edge.to, usage
+                                    ));
+                                    recommendations
+                                        .push(format!("检查 GPU {} 上的进程显存使用", edge.to));
                                 }
                             }
                         }
@@ -66,10 +70,11 @@ impl SceneAnalyzer for GpuOomAnalyzer {
         recommended_actions.push("隔离该节点，执行 ark zap 清理僵尸进程".to_string());
         recommended_actions.push("修改批量大小 (Batch Size) 后重提任务".to_string());
 
+        let confidence = if root_causes.len() > 1 { 0.9 } else { 0.7 };
         AnalysisResult {
             scene: SceneType::GpuOom,
             root_causes,
-            confidence: if root_causes.len() > 1 { 0.9 } else { 0.7 },
+            confidence,
             recommendations,
             recommended_actions,
             severity: crate::scene::types::Severity::Critical,

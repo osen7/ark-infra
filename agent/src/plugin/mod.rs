@@ -1,6 +1,6 @@
-mod trait;
+mod r#trait;
 
-pub use trait::{Actuator, EventSource};
+pub use r#trait::{Actuator, EventSource};
 
 use ark_core::event::Event;
 use async_trait::async_trait;

@@ -1,26 +1,26 @@
-mod types;
 mod analyzer;
+mod checkpoint_timeout;
 mod gpu_oom;
 mod gpu_util_low;
 mod network_stall;
-mod process_crash;
 mod npu_subhealth;
-mod workload_stalled;
+mod process_crash;
 mod storage_io_error;
 mod storage_slow;
-mod checkpoint_timeout;
+mod types;
+mod workload_stalled;
 
-pub use types::{SceneType, AnalysisResult, Severity};
 pub use analyzer::{SceneAnalyzer, SceneRegistry};
+pub use checkpoint_timeout::CheckpointTimeoutAnalyzer;
 pub use gpu_oom::GpuOomAnalyzer;
 pub use gpu_util_low::GpuUtilLowAnalyzer;
 pub use network_stall::NetworkStallAnalyzer;
-pub use process_crash::ProcessCrashAnalyzer;
 pub use npu_subhealth::NpuSubhealthAnalyzer;
-pub use workload_stalled::WorkloadStalledAnalyzer;
+pub use process_crash::ProcessCrashAnalyzer;
 pub use storage_io_error::StorageIoErrorAnalyzer;
 pub use storage_slow::StorageSlowAnalyzer;
-pub use checkpoint_timeout::CheckpointTimeoutAnalyzer;
+pub use types::{AnalysisResult, SceneType, Severity};
+pub use workload_stalled::WorkloadStalledAnalyzer;
 
 use ark_core::graph::StateGraph;
 
@@ -32,7 +32,7 @@ pub struct SceneIdentifier {
 impl SceneIdentifier {
     pub fn new() -> Self {
         let mut registry = SceneRegistry::new();
-        
+
         // 注册所有场景分析器（按优先级顺序）
         registry.register(GpuOomAnalyzer);
         registry.register(NpuSubhealthAnalyzer);
@@ -43,16 +43,12 @@ impl SceneIdentifier {
         registry.register(StorageIoErrorAnalyzer);
         registry.register(StorageSlowAnalyzer);
         registry.register(CheckpointTimeoutAnalyzer);
-        
+
         Self { registry }
     }
 
     /// 识别场景类型
-    pub async fn identify_scene(
-        &self,
-        graph: &StateGraph,
-        pid: u32,
-    ) -> Option<SceneType> {
+    pub async fn identify_scene(&self, graph: &StateGraph, pid: u32) -> Option<SceneType> {
         let pid_str = format!("pid-{}", pid);
         let edges = graph.get_all_edges_async().await;
         let nodes = graph.get_nodes_async().await;
@@ -114,9 +110,11 @@ impl SceneIdentifier {
                     let mut low_util_count = 0;
                     let mut total_resources = 0;
                     let mut has_io_wait = false;
-                    
+
                     for edge in &edges {
-                        if edge.from == pid_str && edge.edge_type == ark_core::graph::EdgeType::Consumes {
+                        if edge.from == pid_str
+                            && edge.edge_type == ark_core::graph::EdgeType::Consumes
+                        {
                             total_resources += 1;
                             if let Some(res_node) = nodes.get(&edge.to) {
                                 if let Some(util) = res_node.metadata.get("util") {
@@ -128,13 +126,15 @@ impl SceneIdentifier {
                                 }
                             }
                         }
-                        if edge.from == pid_str && edge.edge_type == ark_core::graph::EdgeType::WaitsOn {
+                        if edge.from == pid_str
+                            && edge.edge_type == ark_core::graph::EdgeType::WaitsOn
+                        {
                             if edge.to.contains("network") || edge.to.contains("storage") {
                                 has_io_wait = true;
                             }
                         }
                     }
-                    
+
                     // 所有资源利用率 < 1% 且没有 IO 等待，可能是卡死
                     if total_resources > 0 && low_util_count == total_resources && !has_io_wait {
                         return Some(SceneType::WorkloadStalled);
@@ -154,7 +154,7 @@ impl SceneIdentifier {
         pid: u32,
     ) -> Option<AnalysisResult> {
         let pid_str = format!("pid-{}", pid);
-        
+
         if let Some(analyzer) = self.registry.get_analyzer(scene) {
             Some(analyzer.analyze(graph, &pid_str).await)
         } else {

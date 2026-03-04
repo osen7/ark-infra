@@ -4,6 +4,9 @@
 
 ### 1. 项目规划
 - **[ROADMAP.md](ROADMAP.md)** - 项目路线图、开发计划和里程碑
+- **[EXECUTION_PLAN.md](EXECUTION_PLAN.md)** - 6 周执行计划（按周里程碑 + 验收标准）
+- **[ENGINEERING_PLAN.md](ENGINEERING_PLAN.md)** - 12 周工程化计划（KPI + 风险控制 + DoD）
+- **[深度调研（清洗版）](../deep-research-report.md)** - 现状与落地计划（As-Is / To-Be）
 
 ### 2. 架构设计
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - 系统架构设计文档
@@ -59,3 +62,6 @@
 - [快速开始](../QUICKSTART.md) - 5 分钟上手指南
 - [探针示例](../examples/README.md) - 探针开发指南
 - [eBPF 探针项目](../ark-probe-ebpf/README.md) - eBPF 探针完整文档
+- [贡献指南](../CONTRIBUTING.md) - 开发与提交流程
+- [安全策略](../SECURITY.md) - 漏洞披露与安全注意事项
+- [发布指南](../RELEASE.md) - 版本发布流程

@@ -1,6 +1,6 @@
-use ark_core::graph::{EdgeType, StateGraph};
 use crate::scene::analyzer::SceneAnalyzer;
 use crate::scene::types::{AnalysisResult, SceneType};
+use ark_core::graph::{EdgeType, StateGraph};
 
 /// 进程崩溃场景分析器
 pub struct ProcessCrashAnalyzer;
