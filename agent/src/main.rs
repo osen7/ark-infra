@@ -105,6 +105,12 @@ enum Commands {
         /// 输出结构化 JSON
         #[arg(long)]
         json: bool,
+        /// 运行规则包结构校验（不触发 cargo test）
+        #[arg(long)]
+        check_rules_validate: bool,
+        /// 运行 fixtures 契约文件校验（不触发 cargo test）
+        #[arg(long)]
+        check_fixtures: bool,
         #[cfg(unix)]
         /// Unix Domain Socket 路径（默认: /var/run/ark.sock 或 ~/.ark/ark.sock）
         #[arg(long)]
@@ -236,16 +242,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             hub,
             strict,
             json,
+            check_rules_validate,
+            check_fixtures,
             socket_path,
         } => {
-            run_doctor(DoctorOptions {
+            if let Err(e) = run_doctor(DoctorOptions {
                 rules_dir,
                 hub,
                 strict,
                 json,
+                check_rules_validate,
+                check_fixtures,
                 socket_path,
             })
-            .await?;
+            .await
+            {
+                eprintln!("[ark] doctor failed: {}", e);
+                std::process::exit(e.exit_code());
+            }
         }
         #[cfg(windows)]
         Commands::Doctor {
@@ -253,16 +267,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             hub,
             strict,
             json,
+            check_rules_validate,
+            check_fixtures,
             port,
         } => {
-            run_doctor(DoctorOptions {
+            if let Err(e) = run_doctor(DoctorOptions {
                 rules_dir,
                 hub,
                 strict,
                 json,
+                check_rules_validate,
+                check_fixtures,
                 port,
             })
-            .await?;
+            .await
+            {
+                eprintln!("[ark] doctor failed: {}", e);
+                std::process::exit(e.exit_code());
+            }
         }
         Commands::Zap { pid } => {
             zap_process(pid).await?;
@@ -764,9 +786,22 @@ async fn query_why(
     use colored::*;
 
     let client = IpcClient::new(socket_path);
+    let node_id = get_node_id();
+    let agent_id = std::env::var("ARK_AGENT_ID").unwrap_or_else(|_| node_id.clone());
 
     // 检查 daemon 是否运行
     if !client.ping().await? {
+        if json_output {
+            let report = build_why_error_report(
+                pid,
+                &node_id,
+                &agent_id,
+                "DAEMON_UNREACHABLE",
+                "ark daemon is not reachable",
+                Some("start daemon with `ark run`"),
+            );
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         eprintln!("[ark] 错误：无法连接到 daemon");
         eprintln!("[ark] 请先运行: ark run");
         return Err("daemon 未运行".into());
@@ -778,7 +813,7 @@ async fn query_why(
     // 尝试场景识别和分析（需要访问图状态，当前通过 IPC 无法直接访问）
     // 这里先使用基本的根因分析，场景分析功能可以在未来扩展 IPC 接口后启用
 
-    let report = build_why_report(pid, &causes);
+    let report = build_why_report(pid, &causes, node_id, agent_id);
 
     if json_output {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -818,9 +853,22 @@ async fn query_why(
     use colored::*;
 
     let client = IpcClient::new(port);
+    let node_id = get_node_id();
+    let agent_id = std::env::var("ARK_AGENT_ID").unwrap_or_else(|_| node_id.clone());
 
     // 检查 daemon 是否运行
     if !client.ping().await? {
+        if json_output {
+            let report = build_why_error_report(
+                pid,
+                &node_id,
+                &agent_id,
+                "DAEMON_UNREACHABLE",
+                "ark daemon is not reachable",
+                Some("start daemon with `ark run`"),
+            );
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         eprintln!("[ark] 错误：无法连接到 daemon (端口 {})", port);
         eprintln!("[ark] 请先运行: ark run");
         return Err("daemon 未运行".into());
@@ -829,7 +877,7 @@ async fn query_why(
     // 查询根因
     let causes = client.why_process(pid).await?;
 
-    let report = build_why_report(pid, &causes);
+    let report = build_why_report(pid, &causes, node_id, agent_id);
 
     if json_output {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -843,23 +891,93 @@ async fn query_why(
 
 #[derive(serde::Serialize)]
 struct WhyReport {
+    schema_version: u32,
+    timestamp: String,
+    node_id: String,
+    agent_id: String,
     pid: u32,
     scene: Option<String>,
     reason_codes: Vec<String>,
     evidence: Vec<String>,
+    tags: std::collections::BTreeMap<String, String>,
+    metrics: std::collections::BTreeMap<String, serde_json::Value>,
+    error: Option<WhyError>,
     causes: Vec<String>,
 }
 
-fn build_why_report(pid: u32, causes: &[String]) -> WhyReport {
+#[derive(serde::Serialize)]
+struct WhyError {
+    code: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<String>,
+}
+
+fn build_why_report(pid: u32, causes: &[String], node_id: String, agent_id: String) -> WhyReport {
     let scene = infer_scene(causes).map(ToString::to_string);
-    let reason_codes = infer_reason_codes(causes);
-    let evidence = causes.to_vec();
+    let mut reason_codes = infer_reason_codes(causes);
+    reason_codes.sort();
+    reason_codes.dedup();
+    let mut evidence = causes.to_vec();
+    evidence.sort();
+    evidence.dedup();
+    let mut tags = std::collections::BTreeMap::new();
+    tags.insert("source".to_string(), "ipc".to_string());
+    if let Some(scene_name) = scene.as_ref() {
+        tags.insert("scene".to_string(), scene_name.clone());
+    }
+
+    let mut metrics = std::collections::BTreeMap::new();
+    metrics.insert("cause_count".to_string(), serde_json::json!(causes.len()));
+    metrics.insert(
+        "reason_code_count".to_string(),
+        serde_json::json!(reason_codes.len()),
+    );
+
     WhyReport {
+        schema_version: 1,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        node_id,
+        agent_id,
         pid,
         scene,
         reason_codes,
         evidence,
+        tags,
+        metrics,
+        error: None,
         causes: causes.to_vec(),
+    }
+}
+
+fn build_why_error_report(
+    pid: u32,
+    node_id: &str,
+    agent_id: &str,
+    code: &str,
+    message: &str,
+    hint: Option<&str>,
+) -> WhyReport {
+    let mut tags = std::collections::BTreeMap::new();
+    tags.insert("source".to_string(), "ipc".to_string());
+    let metrics = std::collections::BTreeMap::new();
+    WhyReport {
+        schema_version: 1,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        node_id: node_id.to_string(),
+        agent_id: agent_id.to_string(),
+        pid,
+        scene: None,
+        reason_codes: Vec::new(),
+        evidence: Vec::new(),
+        tags,
+        metrics,
+        error: Some(WhyError {
+            code: code.to_string(),
+            message: message.to_string(),
+            hint: hint.map(|v| v.to_string()),
+        }),
+        causes: Vec::new(),
     }
 }
 
