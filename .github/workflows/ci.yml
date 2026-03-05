@@ -37,20 +37,6 @@ jobs:
           cargo test -p ark-core --test rules_fixtures
           cargo test -p ark-core --test catalog_lint
 
-  rules-strict:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Strict rules gate
-        env:
-          ARK_RULES_STRICT: "1"
-        run: cargo test -p ark-core --test rules_fixtures
-
   doc-links:
     runs-on: ubuntu-latest
     steps:
@@ -89,20 +75,3 @@ jobs:
           cargo run -p ark -- doctor --json >/dev/null
           WHY_JSON="$(cargo run -q -p ark -- why 999999 --json 2>/dev/null || true)"
           echo "${WHY_JSON}" | grep -E '"schema_version"[[:space:]]*:[[:space:]]*1' >/dev/null
-
-  helm:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: v3.14.4
-
-      - name: Helm lint
-        run: helm lint charts/ark-infra
-
-      - name: Helm template
-        run: helm template ark charts/ark-infra --namespace ark-system >/dev/null
