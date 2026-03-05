@@ -37,7 +37,7 @@ fn expect_u32(map: &Mapping, key: &str, ctx: &str) -> Result<u32, String> {
 fn validate_condition(cond: &Value, ctx: &str) -> Result<(), String> {
     let map = expect_mapping(cond, ctx)?;
 
-    if let Some(t) = map.get(&Value::String("type".to_string())) {
+    if let Some(t) = map.get(Value::String("type".to_string())) {
         let ty = t
             .as_str()
             .ok_or_else(|| format!("{} 字段 `type` 必须是字符串", ctx))?;
@@ -52,7 +52,7 @@ fn validate_condition(cond: &Value, ctx: &str) -> Result<(), String> {
             }
             "metric" => {
                 let metrics = map
-                    .get(&Value::String("metrics".to_string()))
+                    .get(Value::String("metrics".to_string()))
                     .ok_or_else(|| format!("{} metric 条件缺少 `metrics`", ctx))?
                     .as_sequence()
                     .ok_or_else(|| format!("{} 字段 `metrics` 必须是数组", ctx))?;
@@ -76,7 +76,7 @@ fn validate_condition(cond: &Value, ctx: &str) -> Result<(), String> {
             }
             "all" | "any" => {
                 let nested = map
-                    .get(&Value::String("conditions".to_string()))
+                    .get(Value::String("conditions".to_string()))
                     .ok_or_else(|| format!("{} {} 条件缺少 `conditions`", ctx, ty))?
                     .as_sequence()
                     .ok_or_else(|| format!("{} 字段 `conditions` 必须是数组", ctx))?;
@@ -90,7 +90,7 @@ fn validate_condition(cond: &Value, ctx: &str) -> Result<(), String> {
             }
             _ => Err(format!("{} 字段 `type` 非法: {}", ctx, ty)),
         }
-    } else if let Some(all) = map.get(&Value::String("all".to_string())) {
+    } else if let Some(all) = map.get(Value::String("all".to_string())) {
         let seq = all
             .as_sequence()
             .ok_or_else(|| format!("{} 字段 `all` 必须是数组", ctx))?;
@@ -101,7 +101,7 @@ fn validate_condition(cond: &Value, ctx: &str) -> Result<(), String> {
             validate_condition(item, &format!("{} -> all[{}]", ctx, idx))?;
         }
         Ok(())
-    } else if let Some(any) = map.get(&Value::String("any".to_string())) {
+    } else if let Some(any) = map.get(Value::String("any".to_string())) {
         let seq = any
             .as_sequence()
             .ok_or_else(|| format!("{} 字段 `any` 必须是数组", ctx))?;
@@ -153,11 +153,11 @@ fn validate_rule(path: &Path, value: &Value) -> Result<(String, u32), String> {
     }
 
     let conditions = map
-        .get(&Value::String("conditions".to_string()))
+        .get(Value::String("conditions".to_string()))
         .ok_or_else(|| format!("{} 缺少字段 `conditions`", ctx))?;
     validate_conditions(conditions, &format!("{}: conditions", ctx))?;
 
-    if let Some(reason_codes) = map.get(&Value::String("reason_codes".to_string())) {
+    if let Some(reason_codes) = map.get(Value::String("reason_codes".to_string())) {
         let seq = reason_codes
             .as_sequence()
             .ok_or_else(|| format!("{}: reason_codes 必须是数组", ctx))?;
@@ -172,7 +172,7 @@ fn validate_rule(path: &Path, value: &Value) -> Result<(String, u32), String> {
     }
 
     let root_cause = map
-        .get(&Value::String("root_cause_pattern".to_string()))
+        .get(Value::String("root_cause_pattern".to_string()))
         .ok_or_else(|| format!("{} 缺少字段 `root_cause_pattern`", ctx))?;
     let root_cause_map = expect_mapping(root_cause, &ctx)?;
     expect_string(
@@ -182,7 +182,7 @@ fn validate_rule(path: &Path, value: &Value) -> Result<(String, u32), String> {
     )?;
 
     let steps = map
-        .get(&Value::String("solution_steps".to_string()))
+        .get(Value::String("solution_steps".to_string()))
         .ok_or_else(|| format!("{} 缺少字段 `solution_steps`", ctx))?
         .as_sequence()
         .ok_or_else(|| format!("{} 字段 `solution_steps` 必须是数组", ctx))?;
@@ -211,7 +211,7 @@ fn validate_rule(path: &Path, value: &Value) -> Result<(String, u32), String> {
             "action",
             &format!("{}: solution_steps[{}]", ctx, idx),
         )?;
-        if let Some(manual) = step_map.get(&Value::String("manual".to_string())) {
+        if let Some(manual) = step_map.get(Value::String("manual".to_string())) {
             if !manual.is_bool() {
                 return Err(format!(
                     "{}: solution_steps[{}].manual 必须是布尔值",
@@ -219,7 +219,7 @@ fn validate_rule(path: &Path, value: &Value) -> Result<(String, u32), String> {
                 ));
             }
         }
-        if let Some(cmd) = step_map.get(&Value::String("command".to_string())) {
+        if let Some(cmd) = step_map.get(Value::String("command".to_string())) {
             if !cmd.is_null() && cmd.as_str().is_none() {
                 return Err(format!(
                     "{}: solution_steps[{}].command 必须是字符串或 null",
@@ -230,7 +230,7 @@ fn validate_rule(path: &Path, value: &Value) -> Result<(String, u32), String> {
     }
 
     let evidences = map
-        .get(&Value::String("related_evidences".to_string()))
+        .get(Value::String("related_evidences".to_string()))
         .ok_or_else(|| format!("{} 缺少字段 `related_evidences`", ctx))?
         .as_sequence()
         .ok_or_else(|| format!("{} 字段 `related_evidences` 必须是数组", ctx))?;
@@ -244,11 +244,11 @@ fn validate_rule(path: &Path, value: &Value) -> Result<(String, u32), String> {
     }
 
     let applicability = map
-        .get(&Value::String("applicability".to_string()))
+        .get(Value::String("applicability".to_string()))
         .ok_or_else(|| format!("{} 缺少字段 `applicability`", ctx))?;
     let app_map = expect_mapping(applicability, &ctx)?;
     let min_conf = app_map
-        .get(&Value::String("min_confidence".to_string()))
+        .get(Value::String("min_confidence".to_string()))
         .and_then(Value::as_f64)
         .ok_or_else(|| format!("{}: applicability.min_confidence 必须是数字", ctx))?;
     if !(0.0..=1.0).contains(&min_conf) {
@@ -257,7 +257,7 @@ fn validate_rule(path: &Path, value: &Value) -> Result<(String, u32), String> {
             ctx
         ));
     }
-    if let Some(required_events) = app_map.get(&Value::String("required_events".to_string())) {
+    if let Some(required_events) = app_map.get(Value::String("required_events".to_string())) {
         let seq = required_events
             .as_sequence()
             .ok_or_else(|| format!("{}: applicability.required_events 必须是数组", ctx))?;
