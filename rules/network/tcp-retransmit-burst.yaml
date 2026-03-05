@@ -8,7 +8,6 @@ conditions:
   - type: "event"
     event_type: "transport.drop"
     value_pattern: "retransmit|drop"
-    value_threshold: 5
 root_cause_pattern:
   primary: "网络丢包和重传导致吞吐下降"
   secondary:

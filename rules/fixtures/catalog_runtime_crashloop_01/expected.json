@@ -1,0 +1,5 @@
+{
+  "expect_scenes": ["runtime.container.crashloop"],
+  "expect_reason_codes": ["CONTAINER_CRASHLOOP"],
+  "expect_evidence_contains": ["process.state", "intent.run"]
+}

@@ -1,0 +1,2 @@
+{"ts":1,"event_type":"process.state","entity_id":"proc-116","job_id":"job-cat-rc","pid":116,"value":"crash restart","node_id":"node-c"}
+{"ts":2,"event_type":"intent.run","entity_id":"pod-trainer","job_id":"job-cat-rc","pid":116,"value":"pod container launch","node_id":"node-c"}

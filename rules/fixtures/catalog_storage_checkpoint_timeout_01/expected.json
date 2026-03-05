@@ -1,0 +1,5 @@
+{
+  "expect_scenes": ["storage.checkpoint.io_timeout"],
+  "expect_reason_codes": ["CHECKPOINT_IO_TIMEOUT"],
+  "expect_evidence_contains": ["storage.qdepth", "process.state"]
+}

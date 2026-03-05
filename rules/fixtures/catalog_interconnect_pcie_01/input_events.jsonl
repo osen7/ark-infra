@@ -1,0 +1,1 @@
+{"ts":1,"event_type":"topo.link_down","entity_id":"pcie-0","job_id":"job-cat-ip","pid":113,"value":"pcie degraded","node_id":"node-a"}

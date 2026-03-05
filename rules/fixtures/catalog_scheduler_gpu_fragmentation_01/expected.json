@@ -1,0 +1,5 @@
+{
+  "expect_scenes": ["scheduler.gpu.fragmentation"],
+  "expect_reason_codes": ["GPU_FRAGMENTATION"],
+  "expect_evidence_contains": ["intent.run"]
+}

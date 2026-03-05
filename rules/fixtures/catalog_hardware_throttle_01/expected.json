@@ -1,0 +1,5 @@
+{
+  "expect_scenes": ["hardware.gpu.throttle"],
+  "expect_reason_codes": ["GPU_THROTTLE"],
+  "expect_evidence_contains": ["error.hw"]
+}

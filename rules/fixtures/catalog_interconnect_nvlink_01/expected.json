@@ -1,0 +1,5 @@
+{
+  "expect_scenes": ["interconnect.nvlink.error"],
+  "expect_reason_codes": ["NVLINK_ERROR"],
+  "expect_evidence_contains": ["topo.link_down"]
+}

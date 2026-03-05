@@ -1,0 +1,2 @@
+{"ts":1,"event_type":"error.net","entity_id":"mlx5_2","job_id":"job-cat-rn","pid":115,"value":"nccl allreduce timeout","node_id":"node-c"}
+{"ts":2,"event_type":"process.state","entity_id":"proc-115","job_id":"job-cat-rn","pid":115,"value":"stalled waiting","node_id":"node-c"}

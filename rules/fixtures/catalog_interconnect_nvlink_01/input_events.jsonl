@@ -1,0 +1,1 @@
+{"ts":1,"event_type":"topo.link_down","entity_id":"nvlink-0","job_id":"job-cat-in","pid":112,"value":"nvlink degraded","node_id":"node-a"}

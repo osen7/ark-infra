@@ -1,0 +1,5 @@
+{
+  "expect_scenes": ["scheduler.k8s.node_not_ready"],
+  "expect_reason_codes": ["NODE_NOT_READY"],
+  "expect_evidence_contains": ["process.state"]
+}

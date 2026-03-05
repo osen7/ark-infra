@@ -1,0 +1,5 @@
+{
+  "expect_scenes": ["runtime.nccl.hang"],
+  "expect_reason_codes": ["NCCL_HANG"],
+  "expect_evidence_contains": ["error.net", "process.state"]
+}
