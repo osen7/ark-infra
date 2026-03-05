@@ -3,8 +3,11 @@ use crate::signals::{SignalEngine, SignalRegistry, SignalValue};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 
+const EDGE_TTL_MS: u64 = 60 * 60 * 1000;
+const MAX_EDGES: usize = 100_000;
+
 /// 三大推导边类型
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EdgeType {
     Consumes,  // 进程 PID 消耗某物理资源
     WaitsOn,   // 进程 PID 正在等待某网络/存储资源完成
@@ -40,8 +43,23 @@ pub enum NodeType {
 pub struct StateGraph {
     nodes: RwLock<HashMap<String, Node>>,
     edges: RwLock<Vec<Edge>>,
+    edge_index: RwLock<HashSet<EdgeKey>>,
     signals: RwLock<SignalEngine>,
     error_window_ms: u64, // 错误窗口时间（默认5分钟）
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct EdgeKey {
+    edge_type: EdgeType,
+    from: String,
+    to: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct GraphMetrics {
+    pub nodes_total: usize,
+    pub edges_total: usize,
+    pub edges_by_type: HashMap<String, usize>,
 }
 
 impl StateGraph {
@@ -50,6 +68,7 @@ impl StateGraph {
         Self {
             nodes: RwLock::new(HashMap::new()),
             edges: RwLock::new(Vec::new()),
+            edge_index: RwLock::new(HashSet::new()),
             signals: RwLock::new(SignalEngine::new(SignalRegistry::default_mvp())),
             error_window_ms: 5 * 60 * 1000, // 5分钟
         }
@@ -169,6 +188,7 @@ impl StateGraph {
     async fn handle_compute_event(&self, event: &Event) -> Result<(), String> {
         let mut nodes = self.nodes.write().await;
         let mut edges = self.edges.write().await;
+        let mut edge_index = self.edge_index.write().await;
 
         // 确保资源节点存在（应用命名空间）
         let resource_id = self.namespace_node_id(event, &event.entity_id);
@@ -209,19 +229,16 @@ impl StateGraph {
                 );
             }
 
-            // 检查是否已存在相同的边
-            let edge_exists = edges.iter().any(|e| {
-                e.edge_type == EdgeType::Consumes && e.from == pid_str && e.to == resource_id
-            });
-
-            if !edge_exists {
-                edges.push(Edge {
+            upsert_edge(
+                &mut edges,
+                &mut edge_index,
+                Edge {
                     edge_type: EdgeType::Consumes,
                     from: pid_str,
                     to: resource_id.clone(),
                     ts: event.ts,
-                });
-            }
+                },
+            );
         }
 
         Ok(())
@@ -231,6 +248,7 @@ impl StateGraph {
     async fn handle_transport_event(&self, event: &Event) -> Result<(), String> {
         let mut nodes = self.nodes.write().await;
         let mut edges = self.edges.write().await;
+        let mut edge_index = self.edge_index.write().await;
 
         // 确保资源节点存在
         // 对于 transport.drop 事件，entity_id 格式可能是 "network-pid-<PID>" 或 "eth0" 等
@@ -305,19 +323,17 @@ impl StateGraph {
                     );
                 }
 
-                // 检查是否已存在 WaitsOn 边
-                let edge_exists = edges.iter().any(|e| {
-                    e.edge_type == EdgeType::WaitsOn && e.from == pid_str && e.to == resource_id
-                });
-
-                if !edge_exists {
-                    edges.push(Edge {
+                let inserted = upsert_edge(
+                    &mut edges,
+                    &mut edge_index,
+                    Edge {
                         edge_type: EdgeType::WaitsOn,
                         from: pid_str.clone(),
                         to: resource_id.clone(),
                         ts: event.ts,
-                    });
-
+                    },
+                );
+                if inserted {
                     // 日志输出（用于调试）
                     eprintln!(
                         "🔗 [图引擎] 建立阻塞关联: {} WaitsOn {} (transport.drop)",
@@ -349,18 +365,16 @@ impl StateGraph {
                         );
                     }
 
-                    let edge_exists = edges.iter().any(|e| {
-                        e.edge_type == EdgeType::WaitsOn && e.from == pid_str && e.to == resource_id
-                    });
-
-                    if !edge_exists {
-                        edges.push(Edge {
+                    upsert_edge(
+                        &mut edges,
+                        &mut edge_index,
+                        Edge {
                             edge_type: EdgeType::WaitsOn,
                             from: pid_str,
                             to: resource_id.clone(),
                             ts: event.ts,
-                        });
-                    }
+                        },
+                    );
                 }
             }
         }
@@ -378,6 +392,7 @@ impl StateGraph {
     async fn handle_error_event(&self, event: &Event) -> Result<(), String> {
         let mut nodes = self.nodes.write().await;
         let mut edges = self.edges.write().await;
+        let mut edge_index = self.edge_index.write().await;
 
         let error_id_base = format!("error-{}", event.entity_id);
         let error_id = self.namespace_node_id(event, &error_id_base);
@@ -411,18 +426,16 @@ impl StateGraph {
         };
 
         for pid_str in affected_pids {
-            let edge_exists = edges.iter().any(|e| {
-                e.edge_type == EdgeType::BlockedBy && e.from == pid_str && e.to == error_id
-            });
-
-            if !edge_exists {
-                edges.push(Edge {
+            upsert_edge(
+                &mut edges,
+                &mut edge_index,
+                Edge {
                     edge_type: EdgeType::BlockedBy,
                     from: pid_str,
                     to: error_id.clone(),
                     ts: event.ts,
-                });
-            }
+                },
+            );
         }
 
         Ok(())
@@ -438,6 +451,7 @@ impl StateGraph {
     async fn cleanup_old_errors(&self, current_ts: u64) {
         let mut nodes = self.nodes.write().await;
         let mut edges = self.edges.write().await;
+        let mut edge_index = self.edge_index.write().await;
 
         let cutoff_ts = current_ts.saturating_sub(self.error_window_ms);
 
@@ -486,8 +500,40 @@ impl StateGraph {
         // 清理相关的边
         edges.retain(|e| !dead_pids.contains(&e.from) && !dead_pids.contains(&e.to));
 
+        // 全局 TTL 清理，避免边无界增长
+        let edge_cutoff = current_ts.saturating_sub(EDGE_TTL_MS);
+        edges.retain(|e| e.ts >= edge_cutoff);
+
+        // 容量保护，保留最新边防止异常流量导致 OOM
+        if edges.len() > MAX_EDGES {
+            edges.sort_by_key(|e| std::cmp::Reverse(e.ts));
+            edges.truncate(MAX_EDGES);
+        }
+        rebuild_edge_index(&edges, &mut edge_index);
+
         // 注意：资源节点（Resource）不会被清理，即使长时间没有更新
         // 因为资源可能处于稳态（如 GPU 利用率保持 100%），需要探针发送心跳事件来维持
+    }
+
+    pub async fn metrics_snapshot(&self) -> GraphMetrics {
+        let nodes = self.nodes.read().await;
+        let edges = self.edges.read().await;
+        let mut edges_by_type = HashMap::new();
+
+        for edge in edges.iter() {
+            let ty = match edge.edge_type {
+                EdgeType::Consumes => "consumes",
+                EdgeType::WaitsOn => "waits_on",
+                EdgeType::BlockedBy => "blocked_by",
+            };
+            *edges_by_type.entry(ty.to_string()).or_insert(0) += 1;
+        }
+
+        GraphMetrics {
+            nodes_total: nodes.len(),
+            edges_total: edges.len(),
+            edges_by_type,
+        }
     }
 
     /// 获取所有活跃进程
@@ -589,5 +635,76 @@ impl StateGraph {
 impl Default for StateGraph {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn edge_key(edge: &Edge) -> EdgeKey {
+    EdgeKey {
+        edge_type: edge.edge_type.clone(),
+        from: edge.from.clone(),
+        to: edge.to.clone(),
+    }
+}
+
+fn upsert_edge(edges: &mut Vec<Edge>, edge_index: &mut HashSet<EdgeKey>, edge: Edge) -> bool {
+    let key = edge_key(&edge);
+    if edge_index.insert(key) {
+        edges.push(edge);
+        true
+    } else {
+        false
+    }
+}
+
+fn rebuild_edge_index(edges: &[Edge], edge_index: &mut HashSet<EdgeKey>) {
+    edge_index.clear();
+    for edge in edges {
+        edge_index.insert(edge_key(edge));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StateGraph;
+    use crate::event::{Event, EventType};
+
+    #[tokio::test]
+    async fn cleanup_applies_edge_ttl() {
+        let graph = StateGraph::new();
+
+        let old_event = Event {
+            ts: 1_000,
+            event_type: EventType::TransportDrop,
+            entity_id: "network-pid-1001".to_string(),
+            job_id: Some("job-1".to_string()),
+            pid: Some(1001),
+            value: "retransmit".to_string(),
+            node_id: Some("node-a".to_string()),
+        };
+        graph
+            .process_event(&old_event)
+            .await
+            .expect("process old event");
+
+        let new_event = Event {
+            ts: 1_000 + super::EDGE_TTL_MS + 1,
+            event_type: EventType::TransportDrop,
+            entity_id: "network-pid-1002".to_string(),
+            job_id: Some("job-2".to_string()),
+            pid: Some(1002),
+            value: "retransmit".to_string(),
+            node_id: Some("node-a".to_string()),
+        };
+        graph
+            .process_event(&new_event)
+            .await
+            .expect("process new event");
+
+        let metrics = graph.metrics_snapshot().await;
+        assert!(
+            metrics.edges_total <= 2,
+            "old edges should be cleaned by TTL, edges_total={}",
+            metrics.edges_total
+        );
     }
 }
