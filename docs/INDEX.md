@@ -5,8 +5,10 @@
 ## 入门与使用
 
 - [主 README](../README.md) - 项目概览与常用命令
-- [快速开始](../QUICKSTART.md) - 最短路径上手
+- [quickstart.md](quickstart.md) - 最小可用运行路径（单机/集群/eBPF）
+- [快速开始（兼容）](../QUICKSTART.md) - 旧版快速开始
 - [Kubernetes 部署](../deploy/README.md) - 生产部署与权限说明
+- [COMPATIBILITY_MATRIX.md](COMPATIBILITY_MATRIX.md) - 版本兼容矩阵
 
 ## 架构与实现
 
@@ -14,6 +16,7 @@
 - [WORKSPACE_ARCHITECTURE.md](WORKSPACE_ARCHITECTURE.md) - workspace 边界与职责
 - [RULES_ENGINE.md](RULES_ENGINE.md) - 规则格式与匹配机制
 - [EBPF_NETWORK_PROBE.md](EBPF_NETWORK_PROBE.md) - eBPF 网络探针说明
+- [EVENT_PROTOCOL.md](EVENT_PROTOCOL.md) - agent↔hub 事件协议与版本策略
 
 ## 生态与维护
 

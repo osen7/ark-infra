@@ -1,0 +1,5 @@
+{"ts": 1700000100001, "event_type": "process.state", "entity_id": "proc-5001", "job_id": "job-net-01", "pid": 5001, "value": "start"}
+{"ts": 1700000100002, "event_type": "transport.drop", "entity_id": "network-eth0", "job_id": "job-net-01", "pid": 5001, "value": "12"}
+{"ts": 1700000100003, "event_type": "transport.drop", "entity_id": "network-eth0", "job_id": "job-net-01", "pid": 5001, "value": "18"}
+{"ts": 1700000100004, "event_type": "transport.drop", "entity_id": "network-eth0", "job_id": "job-net-01", "pid": 5001, "value": "21"}
+{"ts": 1700000100005, "event_type": "error.net", "entity_id": "network-eth0", "job_id": "job-net-01", "pid": 5001, "value": "tcp_retransmit_burst"}

@@ -1,0 +1,2 @@
+{"ts": 1700000000001, "event_type": "error.hw", "entity_id": "gpu-00", "job_id": "job-gpu-oom", "pid": 4242, "value": "OOM"}
+{"ts": 1700000000002, "event_type": "compute.mem", "entity_id": "gpu-00", "job_id": "job-gpu-oom", "pid": 4242, "value": "97"}

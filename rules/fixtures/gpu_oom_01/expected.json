@@ -1,0 +1,7 @@
+{
+  "expect_scenes": ["gpu_oom"],
+  "expect_actions": [
+    { "name": "检查进程显存使用情况", "mode": "recommend" }
+  ],
+  "expect_evidence_contains": ["compute.mem", "error.hw"]
+}

@@ -1,0 +1,21 @@
+version: 1
+packs:
+  - name: core
+    enabled: true
+    dir: core
+  - name: nvidia
+    enabled: true
+    dir: nvidia
+  - name: ascend
+    enabled: true
+    dir: ascend
+  - name: k8s
+    enabled: true
+    dir: k8s
+legacy:
+  enabled: true
+  patterns:
+    - "*.yaml"
+  exclude:
+    - "manifest.yaml"
+    - "*/**"

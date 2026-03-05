@@ -1,16 +1,80 @@
 use serde::{Deserialize, Serialize};
 
 /// 规则数据结构
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Rule {
+    pub id: Option<String>,
     pub name: String,
     pub scene: String,
     pub priority: u32,
+    pub reason_codes: Vec<String>,
     pub conditions: Vec<Condition>,
     pub root_cause_pattern: RootCausePattern,
     pub solution_steps: Vec<SolutionStep>,
     pub related_evidences: Vec<String>,
     pub applicability: Applicability,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RuleWire {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub name: String,
+    pub scene: String,
+    pub priority: u32,
+    #[serde(default)]
+    pub reason_codes: Vec<String>,
+    pub conditions: ConditionsWire,
+    pub root_cause_pattern: RootCausePattern,
+    pub solution_steps: Vec<SolutionStep>,
+    pub related_evidences: Vec<String>,
+    pub applicability: Applicability,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacySyntaxStatus {
+    None,
+    Migrated,
+}
+
+impl RuleWire {
+    pub fn normalize(self) -> Result<(Rule, LegacySyntaxStatus), String> {
+        let (conditions, legacy) = match self.conditions {
+            ConditionsWire::New(v) => (v, LegacySyntaxStatus::None),
+            ConditionsWire::Legacy(legacy) => match (legacy.all, legacy.any) {
+                (Some(conditions), None) => (
+                    vec![Condition::All { conditions }],
+                    LegacySyntaxStatus::Migrated,
+                ),
+                (None, Some(conditions)) => (
+                    vec![Condition::Any { conditions }],
+                    LegacySyntaxStatus::Migrated,
+                ),
+                (Some(_), Some(_)) => {
+                    return Err("legacy conditions 不能同时包含 all 和 any".to_string());
+                }
+                (None, None) => {
+                    return Err("legacy conditions 必须包含 all 或 any".to_string());
+                }
+            },
+        };
+
+        Ok((
+            Rule {
+                id: self.id,
+                name: self.name,
+                scene: self.scene,
+                priority: self.priority,
+                reason_codes: self.reason_codes,
+                conditions,
+                root_cause_pattern: self.root_cause_pattern,
+                solution_steps: self.solution_steps,
+                related_evidences: self.related_evidences,
+                applicability: self.applicability,
+            },
+            legacy,
+        ))
+    }
 }
 
 /// 值比较操作符
@@ -110,4 +174,19 @@ pub struct Applicability {
 
 fn default_min_confidence() -> f64 {
     0.8
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum ConditionsWire {
+    New(Vec<Condition>),
+    Legacy(ConditionsLegacyWire),
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConditionsLegacyWire {
+    #[serde(default)]
+    all: Option<Vec<Condition>>,
+    #[serde(default)]
+    any: Option<Vec<Condition>>,
 }

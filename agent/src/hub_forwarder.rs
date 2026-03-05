@@ -15,6 +15,19 @@ use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, Web
 type WsSender =
     futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 
+const HUB_PROTOCOL_VERSION: &str = "1.0";
+const EVENT_SCHEMA_VERSION: &str = "1.0";
+
+#[derive(serde::Serialize)]
+struct HubEventEnvelope {
+    kind: String,
+    protocol_version: String,
+    schema_version: String,
+    agent_id: String,
+    feature_flags: Vec<String>,
+    event: Event,
+}
+
 /// Hub 事件转发器
 pub struct HubForwarder {
     hub_url: String,
@@ -229,7 +242,15 @@ impl HubForwarder {
         event.node_id = Some(self.node_id.clone());
 
         // 序列化为 JSON
-        let json = serde_json::to_string(&event)?;
+        let payload = HubEventEnvelope {
+            kind: "event".to_string(),
+            protocol_version: HUB_PROTOCOL_VERSION.to_string(),
+            schema_version: EVENT_SCHEMA_VERSION.to_string(),
+            agent_id: self.node_id.clone(),
+            feature_flags: vec!["edge_rollup".to_string()],
+            event,
+        };
+        let json = serde_json::to_string(&payload)?;
 
         // 发送到 WebSocket
         if let Some(ref sender_arc) = self.ws_sender {

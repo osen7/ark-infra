@@ -132,17 +132,41 @@ fn validate_rule(path: &Path, value: &Value) -> Result<(String, u32), String> {
     let name = expect_string(map, "name", &ctx)?;
     let scene = expect_string(map, "scene", &ctx)?.to_string();
     let priority = expect_u32(map, "priority", &ctx)?;
+    if !(1..=100).contains(&priority) {
+        return Err(format!(
+            "{}: scene={}: priority={} 超出范围 (expected 1..=100)。建议调整 priority 字段",
+            ctx, scene, priority
+        ));
+    }
 
     let conditions = map
         .get(&Value::String("conditions".to_string()))
         .ok_or_else(|| format!("{} 缺少字段 `conditions`", ctx))?;
     validate_conditions(conditions, &format!("{}: conditions", ctx))?;
 
+    if let Some(reason_codes) = map.get(&Value::String("reason_codes".to_string())) {
+        let seq = reason_codes
+            .as_sequence()
+            .ok_or_else(|| format!("{}: reason_codes 必须是数组", ctx))?;
+        for (idx, code) in seq.iter().enumerate() {
+            let s = code
+                .as_str()
+                .ok_or_else(|| format!("{}: reason_codes[{}] 必须是字符串", ctx, idx))?;
+            if s.trim().is_empty() {
+                return Err(format!("{}: reason_codes[{}] 不能为空", ctx, idx));
+            }
+        }
+    }
+
     let root_cause = map
         .get(&Value::String("root_cause_pattern".to_string()))
         .ok_or_else(|| format!("{} 缺少字段 `root_cause_pattern`", ctx))?;
     let root_cause_map = expect_mapping(root_cause, &ctx)?;
-    expect_string(root_cause_map, "primary", &format!("{}: root_cause_pattern", ctx))?;
+    expect_string(
+        root_cause_map,
+        "primary",
+        &format!("{}: root_cause_pattern", ctx),
+    )?;
 
     let steps = map
         .get(&Value::String("solution_steps".to_string()))
@@ -152,14 +176,44 @@ fn validate_rule(path: &Path, value: &Value) -> Result<(String, u32), String> {
     if steps.is_empty() {
         return Err(format!("{} 字段 `solution_steps` 不能为空数组", ctx));
     }
+    let mut seen_steps = HashSet::new();
     for (idx, step) in steps.iter().enumerate() {
         let step_map = expect_mapping(step, &format!("{}: solution_steps[{}]", ctx, idx))?;
-        let _ = expect_u32(step_map, "step", &format!("{}: solution_steps[{}]", ctx, idx))?;
+        let step_no = expect_u32(
+            step_map,
+            "step",
+            &format!("{}: solution_steps[{}]", ctx, idx),
+        )?;
+        if step_no == 0 {
+            return Err(format!("{}: solution_steps[{}].step 不能为 0", ctx, idx));
+        }
+        if !seen_steps.insert(step_no) {
+            return Err(format!(
+                "{}: scene={}: solution_steps.step 重复: {}。建议保证 step 唯一且递增",
+                ctx, scene, step_no
+            ));
+        }
         let _ = expect_string(
             step_map,
             "action",
             &format!("{}: solution_steps[{}]", ctx, idx),
         )?;
+        if let Some(manual) = step_map.get(&Value::String("manual".to_string())) {
+            if !manual.is_bool() {
+                return Err(format!(
+                    "{}: solution_steps[{}].manual 必须是布尔值",
+                    ctx, idx
+                ));
+            }
+        }
+        if let Some(cmd) = step_map.get(&Value::String("command".to_string())) {
+            if !cmd.is_null() && cmd.as_str().is_none() {
+                return Err(format!(
+                    "{}: solution_steps[{}].command 必须是字符串或 null",
+                    ctx, idx
+                ));
+            }
+        }
     }
 
     let evidences = map
@@ -172,10 +226,7 @@ fn validate_rule(path: &Path, value: &Value) -> Result<(String, u32), String> {
     }
     for (idx, item) in evidences.iter().enumerate() {
         if item.as_str().is_none() {
-            return Err(format!(
-                "{}: related_evidences[{}] 必须是字符串",
-                ctx, idx
-            ));
+            return Err(format!("{}: related_evidences[{}] 必须是字符串", ctx, idx));
         }
     }
 
@@ -216,19 +267,41 @@ fn validate_rule(path: &Path, value: &Value) -> Result<(String, u32), String> {
 
 fn collect_rule_files(rules_dir: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
-    let entries =
-        fs::read_dir(rules_dir).map_err(|e| format!("读取规则目录失败 {}: {}", rules_dir.display(), e))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("读取规则目录项失败: {}", e))?;
-        let path = entry.path();
-        let is_rule = matches!(
-            path.extension().and_then(|s| s.to_str()),
-            Some("yaml") | Some("yml")
-        );
-        if is_rule {
+    let mut stack = vec![rules_dir.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let entries =
+            fs::read_dir(&dir).map_err(|e| format!("读取规则目录失败 {}: {}", dir.display(), e))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("读取规则目录项失败: {}", e))?;
+            let path = entry.path();
+            if path.is_dir() {
+                let rel = path
+                    .strip_prefix(rules_dir)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .to_string();
+                if rel.starts_with("fixtures") {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+
+            let is_rule = matches!(
+                path.extension().and_then(|s| s.to_str()),
+                Some("yaml") | Some("yml")
+            );
+            if !is_rule {
+                continue;
+            }
+            if path.file_name().and_then(|s| s.to_str()) == Some("manifest.yaml") {
+                continue;
+            }
             files.push(path);
         }
     }
+
     files.sort();
     Ok(files)
 }
@@ -272,7 +345,11 @@ fn validate_rules_package() {
         };
 
         if !scenes.insert(scene.clone()) {
-            errors.push(format!("scene 重复: `{}` (文件: {})", scene, path.display()));
+            errors.push(format!(
+                "scene 重复: `{}` (文件: {})",
+                scene,
+                path.display()
+            ));
         }
 
         let key = (scene.clone(), priority);

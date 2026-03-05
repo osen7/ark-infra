@@ -11,10 +11,61 @@
 ```
 ark-infra/
 ├── rules/
+│   ├── manifest.yaml         # 规则包加载配置（可选）
+│   ├── core/                 # 通用规则包
+│   ├── nvidia/               # NVIDIA 规则包
+│   ├── ascend/               # Ascend 规则包
+│   ├── k8s/                  # K8s 规则包
+│   ├── fixtures/             # 契约测试输入/期望
+│   └── legacy/               # 迁移期旧规则（可选）
+│
+│   # 兼容：历史平铺规则仍可加载（manifest legacy.enabled=true 时）
 │   ├── gpu-oom.yaml          # GPU OOM 场景规则
 │   ├── network-stall.yaml    # 网络阻塞场景规则
 │   ├── process-crash.yaml    # 进程崩溃场景规则
 │   └── gpu-error.yaml        # GPU 硬件错误规则
+```
+
+### manifest 最小示例
+
+```yaml
+version: 1
+packs:
+  - name: core
+    enabled: true
+    dir: core
+  - name: nvidia
+    enabled: true
+    dir: nvidia
+legacy:
+  enabled: true
+```
+
+### 规则加载严格模式
+
+默认模式下，无法反序列化的规则会被跳过，并输出加载汇总（loaded/skipped + reason）。
+
+如需在 CI/发布阶段强制失败，可启用：
+
+```bash
+ARK_RULES_STRICT=1 cargo run -p ark-hub -- --rules-dir rules
+```
+
+严格模式下只要存在 `skipped_rules > 0` 即启动失败。
+
+### legacy 迁移工具
+
+可用 `rules-migrate` 将 legacy `conditions: {all|any: ...}` 迁移到新语法：
+
+```bash
+# 单文件预览（不写盘）
+cargo run -p ark-core --bin rules-migrate -- rules/legacy/foo.yaml --dry-run
+
+# 目录迁移到输出目录
+cargo run -p ark-core --bin rules-migrate -- rules --out-dir /tmp/rules-migrated
+
+# 严格模式：出现 partial/failed 即返回非 0
+cargo run -p ark-core --bin rules-migrate -- rules --strict
 ```
 
 ### 规则文件格式（YAML）
@@ -24,6 +75,7 @@ ark-infra/
 name: "GPU OOM 场景"
 scene: "gpu_oom"
 priority: 100
+reason_codes: ["GPU_MEM_HIGH", "OOM_KILL_DETECTED"]  # 可选
 
 # 场景特征（匹配条件）
 conditions:
@@ -68,6 +120,8 @@ applicability:
   min_confidence: 0.8
   required_events: ["compute.mem", "error.hw"]
 ```
+
+`reason_codes` 建议使用稳定的全大写下划线标识，供 fixtures 做结构化断言。
 
 ### 规则引擎实现
 

@@ -4,9 +4,10 @@
 #![allow(dead_code)]
 
 use ark_core::graph::StateGraph;
+use ark_core::rules::RuleLoadStats;
 use prometheus::{
-    register_counter_vec, register_gauge_vec, register_histogram_vec, CounterVec, GaugeVec,
-    HistogramVec, TextEncoder,
+    register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec, CounterVec,
+    Gauge, GaugeVec, HistogramVec, TextEncoder,
 };
 use std::sync::Arc;
 
@@ -22,6 +23,13 @@ pub struct HubMetricsCollector {
     cluster_query_duration_seconds: HistogramVec,
     cluster_fix_actions_total: CounterVec,
     agent_events_received_total: CounterVec,
+    rules_loaded_total: Gauge,
+    rules_skipped_total: Gauge,
+    rules_invalid_total: Gauge,
+    rules_skipped_reason_total: CounterVec,
+    rules_legacy_total: Gauge,
+    rules_legacy_migratable_total: Gauge,
+    rules_legacy_unsupported_total: Gauge,
 }
 
 impl HubMetricsCollector {
@@ -66,6 +74,26 @@ impl HubMetricsCollector {
                 "ark_hub_agent_events_received_total",
                 "从各 Agent 接收的事件数",
                 &["node_id", "event_type"]
+            )?,
+            rules_loaded_total: register_gauge!("ark_rules_loaded_total", "规则加载成功总数")?,
+            rules_skipped_total: register_gauge!("ark_rules_skipped_total", "规则加载跳过总数")?,
+            rules_invalid_total: register_gauge!(
+                "ark_rules_invalid_total",
+                "规则加载无效总数（当前等于 skipped）"
+            )?,
+            rules_skipped_reason_total: register_counter_vec!(
+                "ark_rules_skipped_reason_total",
+                "按原因统计规则跳过次数",
+                &["reason"]
+            )?,
+            rules_legacy_total: register_gauge!("ark_rules_legacy_total", "legacy 语法规则总数")?,
+            rules_legacy_migratable_total: register_gauge!(
+                "ark_rules_legacy_migratable_total",
+                "legacy 语法中可迁移规则数"
+            )?,
+            rules_legacy_unsupported_total: register_gauge!(
+                "ark_rules_legacy_unsupported_total",
+                "legacy 语法中不可迁移规则数"
             )?,
         })
     }
@@ -145,6 +173,23 @@ impl HubMetricsCollector {
         self.cluster_fix_actions_total
             .with_label_values(&[action_type, node_id, result])
             .inc();
+    }
+
+    /// 记录规则加载统计
+    pub fn record_rule_load_stats(&self, stats: &RuleLoadStats) {
+        self.rules_loaded_total.set(stats.loaded_rules as f64);
+        self.rules_skipped_total.set(stats.skipped_rules as f64);
+        self.rules_invalid_total.set(stats.skipped_rules as f64);
+        self.rules_legacy_total.set(stats.legacy_total as f64);
+        self.rules_legacy_migratable_total
+            .set(stats.legacy_migratable_total as f64);
+        self.rules_legacy_unsupported_total
+            .set(stats.legacy_unsupported_total as f64);
+        for (reason, count) in &stats.skipped_by_reason {
+            self.rules_skipped_reason_total
+                .with_label_values(&[reason])
+                .inc_by(*count as f64);
+        }
     }
 
     /// 生成 Prometheus 格式的指标输出

@@ -1,6 +1,9 @@
 name: "网络阻塞场景"
 scene: "network_stall"
 priority: 90
+reason_codes:
+  - "TCP_RETRANSMIT_BURST"
+  - "TRANSPORT_DROP_OBSERVED"
 
 # 场景特征（匹配条件）
 conditions:

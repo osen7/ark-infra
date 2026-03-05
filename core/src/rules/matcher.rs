@@ -45,7 +45,7 @@ impl RuleMatcher {
 
                     // 匹配值模式
                     if let Some(pattern) = value_pattern {
-                        if !event.value.contains(pattern) {
+                        if !matches_value_pattern(&event.value, pattern) {
                             return false;
                         }
                     }
@@ -248,6 +248,13 @@ fn matches_pattern(text: &str, pattern: &str) -> bool {
     pattern
         .split('|')
         .any(|p| matches_single_pattern(text, p.trim()))
+}
+
+fn matches_value_pattern(text: &str, pattern: &str) -> bool {
+    pattern
+        .split('|')
+        .map(str::trim)
+        .any(|p| !p.is_empty() && text.contains(p))
 }
 
 fn matches_single_pattern(text: &str, pattern: &str) -> bool {

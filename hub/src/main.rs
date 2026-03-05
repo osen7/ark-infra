@@ -75,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         RuleEngine::load_from_dir(&cli.rules_dir)
             .map_err(|e| format!("加载规则目录失败 ({}): {}", cli.rules_dir, e))?,
     );
+    metrics.record_rule_load_stats(rule_engine.load_stats());
     println!("📚 已加载规则数量: {}", rule_engine.rule_count());
     // 事件窗口缓存（用于诊断接口）
     let event_buffer = Arc::new(RwLock::new(VecDeque::with_capacity(cli.event_buffer_size)));
@@ -252,7 +253,7 @@ async fn handle_connection(
         match msg? {
             Message::Text(text) => {
                 // 解析事件
-                match serde_json::from_str::<Event>(&text) {
+                match parse_hub_event_message(&text) {
                     Ok(mut event) => {
                         // 如果事件中包含 node_id，使用它并更新连接表
                         if let Some(event_node_id) = &event.node_id {
@@ -319,6 +320,56 @@ async fn handle_connection(
     write_task.abort();
 
     Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct HubEventEnvelope {
+    #[serde(default = "default_kind")]
+    kind: String,
+    #[serde(default = "default_protocol_version")]
+    protocol_version: String,
+    #[serde(default = "default_schema_version")]
+    schema_version: String,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    feature_flags: Vec<String>,
+    event: Event,
+}
+
+fn default_kind() -> String {
+    "event".to_string()
+}
+
+fn default_protocol_version() -> String {
+    "1.0".to_string()
+}
+
+fn default_schema_version() -> String {
+    "1.0".to_string()
+}
+
+fn parse_hub_event_message(raw: &str) -> Result<Event, String> {
+    // Backward compatible:
+    // 1) New envelope: { protocol_version, feature_flags, event }
+    // 2) Legacy payload: Event
+    if let Ok(envelope) = serde_json::from_str::<HubEventEnvelope>(raw) {
+        if envelope.protocol_version.is_empty() {
+            return Err("protocol_version 不能为空".to_string());
+        }
+        if envelope.kind != "event" {
+            return Err(format!("当前仅支持 kind=event，收到: {}", envelope.kind));
+        }
+        let _ = envelope.feature_flags;
+        let _ = envelope.schema_version;
+        let mut event = envelope.event;
+        if event.node_id.is_none() {
+            event.node_id = envelope.agent_id;
+        }
+        return Ok(event);
+    }
+
+    serde_json::from_str::<Event>(raw).map_err(|e| format!("无法解析消息: {}", e))
 }
 
 /// Warp Filter：注入 StateGraph 状态

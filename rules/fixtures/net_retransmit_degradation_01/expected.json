@@ -1,0 +1,5 @@
+{
+  "expect_scenes": ["network_stall"],
+  "expect_reason_codes": ["TCP_RETRANSMIT_BURST"],
+  "expect_evidence_contains": ["transport.drop"]
+}

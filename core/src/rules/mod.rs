@@ -2,54 +2,133 @@ mod matcher;
 mod rule;
 
 pub use matcher::RuleMatcher;
-pub use rule::{Applicability, Condition, RootCausePattern, Rule, SolutionStep};
+pub use rule::{
+    Applicability, Condition, LegacySyntaxStatus, RootCausePattern, Rule, RuleWire, SolutionStep,
+};
 
 use crate::event::Event;
 use crate::graph::StateGraph;
+use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// 规则引擎
 pub struct RuleEngine {
     rules: Vec<Rule>,
+    load_stats: RuleLoadStats,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RuleLoadStats {
+    pub loaded_rules: usize,
+    pub legacy_total: usize,
+    pub legacy_migratable_total: usize,
+    pub legacy_unsupported_total: usize,
+    pub skipped_rules: usize,
+    pub skipped_by_reason: HashMap<String, usize>,
+    pub skipped_samples: Vec<RuleSkipSample>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuleSkipSample {
+    pub path: String,
+    pub reason: String,
+    pub detail: String,
 }
 
 impl RuleEngine {
     /// 从目录加载所有规则文件
     pub fn load_from_dir<P: AsRef<Path>>(dir: P) -> Result<Self, String> {
         let mut rules = Vec::new();
+        let mut stats = RuleLoadStats::default();
         let dir_path = dir.as_ref();
 
         if !dir_path.exists() {
             // 如果目录不存在，返回空规则引擎（不报错，允许无规则运行）
-            return Ok(Self { rules });
+            return Ok(Self {
+                rules,
+                load_stats: stats,
+            });
         }
 
-        let entries = fs::read_dir(dir_path).map_err(|e| format!("读取规则目录失败: {}", e))?;
+        let mut id_owner: HashMap<String, String> = HashMap::new();
+        for (path, pack) in collect_rule_files(dir_path)? {
+            let content = fs::read_to_string(&path)
+                .map_err(|e| format!("读取规则文件失败 {}: {}", path.display(), e))?;
 
-        for entry in entries {
-            let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
-            let path = entry.path();
+            match serde_yaml::from_str::<RuleWire>(&content) {
+                Ok(rule_wire) => match rule_wire.normalize() {
+                    Ok((mut rule, legacy_status)) => {
+                        if legacy_status == LegacySyntaxStatus::Migrated {
+                            stats.legacy_total += 1;
+                            stats.legacy_migratable_total += 1;
+                        }
+                        let final_id = match rule.id.clone() {
+                            Some(id) if !id.trim().is_empty() => id,
+                            Some(_) => {
+                                eprintln!(
+                                    "[rule-engine] 跳过无效规则文件 {}: id 不能为空字符串",
+                                    path.display()
+                                );
+                                continue;
+                            }
+                            None => format!("{}.{}", pack, rule.scene),
+                        };
 
-            if path.extension().and_then(|s| s.to_str()) == Some("yaml")
-                || path.extension().and_then(|s| s.to_str()) == Some("yml")
-            {
-                let content = fs::read_to_string(&path)
-                    .map_err(|e| format!("读取规则文件失败 {}: {}", path.display(), e))?;
+                        if let Some(owner) =
+                            id_owner.insert(final_id.clone(), path.display().to_string())
+                        {
+                            return Err(format!(
+                                "规则 ID 冲突: id=`{}` 文件冲突: {} <-> {}",
+                                final_id,
+                                owner,
+                                path.display()
+                            ));
+                        }
 
-                match serde_yaml::from_str::<Rule>(&content) {
-                    Ok(rule) => rules.push(rule),
-                    Err(e) => {
-                        eprintln!("[rule-engine] 跳过无效规则文件 {}: {}", path.display(), e);
+                        rule.id = Some(final_id);
+                        rules.push(rule);
+                        stats.loaded_rules += 1;
                     }
+                    Err(e) => {
+                        stats.legacy_total += 1;
+                        stats.legacy_unsupported_total += 1;
+                        let reason = "unsupported_legacy_condition".to_string();
+                        let reason_counter =
+                            stats.skipped_by_reason.entry(reason.clone()).or_insert(0);
+                        *reason_counter += 1;
+                        stats.skipped_rules += 1;
+                        stats.skipped_samples.push(RuleSkipSample {
+                            path: path.display().to_string(),
+                            reason,
+                            detail: e,
+                        });
+                    }
+                },
+                Err(e) => {
+                    let reason = classify_skip_reason(&e.to_string());
+                    let reason_counter = stats.skipped_by_reason.entry(reason.clone()).or_insert(0);
+                    *reason_counter += 1;
+                    stats.skipped_rules += 1;
+                    stats.skipped_samples.push(RuleSkipSample {
+                        path: path.display().to_string(),
+                        reason,
+                        detail: e.to_string(),
+                    });
                 }
             }
         }
 
         // 按优先级排序（优先级高的在前）
         rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        print_load_summary(&stats);
+        maybe_fail_in_strict_mode(&stats)?;
 
-        Ok(Self { rules })
+        Ok(Self {
+            rules,
+            load_stats: stats,
+        })
     }
 
     /// 匹配规则
@@ -112,7 +191,7 @@ impl RuleEngine {
                             }
                         }
                         if let Some(pattern) = value_pattern {
-                            if !event.value.contains(pattern) {
+                            if !matches_value_pattern(&event.value, pattern) {
                                 return false;
                             }
                         }
@@ -140,11 +219,148 @@ impl RuleEngine {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct RulesManifest {
+    version: u32,
+    #[serde(default)]
+    packs: Vec<ManifestPack>,
+    #[serde(default)]
+    legacy: ManifestLegacy,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManifestPack {
+    name: String,
+    #[serde(default = "default_true")]
+    enabled: bool,
+    dir: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ManifestLegacy {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[allow(dead_code)]
+    #[serde(default)]
+    patterns: Vec<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    exclude: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_rule_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|s| s.to_str()),
+        Some("yaml") | Some("yml")
+    )
+}
+
+fn collect_rule_files(dir_path: &Path) -> Result<Vec<(PathBuf, String)>, String> {
+    let manifest_path = dir_path.join("manifest.yaml");
+    let mut files = Vec::new();
+    let mut seen = HashSet::new();
+
+    if manifest_path.exists() {
+        let manifest_raw = fs::read_to_string(&manifest_path)
+            .map_err(|e| format!("读取规则 manifest 失败 {}: {}", manifest_path.display(), e))?;
+        let manifest: RulesManifest = serde_yaml::from_str(&manifest_raw)
+            .map_err(|e| format!("解析规则 manifest 失败 {}: {}", manifest_path.display(), e))?;
+        if manifest.version != 1 {
+            return Err(format!(
+                "规则 manifest version 不支持: {} (expected 1)",
+                manifest.version
+            ));
+        }
+
+        for pack in manifest.packs.into_iter().filter(|p| p.enabled) {
+            let pack_dir = dir_path.join(&pack.dir);
+            if !pack_dir.exists() {
+                eprintln!(
+                    "[rule-engine] pack 目录不存在，跳过: name={} dir={}",
+                    pack.name, pack.dir
+                );
+                continue;
+            }
+            collect_rules_recursively(&pack_dir, &pack.name, &mut seen, &mut files)?;
+        }
+
+        if manifest.legacy.enabled {
+            collect_legacy_rules(dir_path, &mut seen, &mut files)?;
+        }
+    } else {
+        collect_legacy_rules(dir_path, &mut seen, &mut files)?;
+    }
+
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(files)
+}
+
+fn collect_rules_recursively(
+    root: &Path,
+    pack: &str,
+    seen: &mut HashSet<PathBuf>,
+    out: &mut Vec<(PathBuf, String)>,
+) -> Result<(), String> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries =
+            fs::read_dir(&dir).map_err(|e| format!("读取规则目录失败 {}: {}", dir.display(), e))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if is_rule_file(&path) && seen.insert(path.clone()) {
+                out.push((path, pack.to_string()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_legacy_rules(
+    dir_path: &Path,
+    seen: &mut HashSet<PathBuf>,
+    out: &mut Vec<(PathBuf, String)>,
+) -> Result<(), String> {
+    let entries = fs::read_dir(dir_path).map_err(|e| format!("读取规则目录失败: {}", e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+        let path = entry.path();
+        if path.is_file()
+            && is_rule_file(&path)
+            && path.file_name().and_then(|s| s.to_str()) != Some("manifest.yaml")
+            && seen.insert(path.clone())
+        {
+            out.push((path, "legacy".to_string()));
+        }
+    }
+
+    let legacy_dir = dir_path.join("legacy");
+    if legacy_dir.exists() {
+        collect_rules_recursively(&legacy_dir, "legacy", seen, out)?;
+    }
+    Ok(())
+}
+
 /// 简单的通配符模式匹配（从 matcher.rs 复制）
 fn matches_pattern(text: &str, pattern: &str) -> bool {
     pattern
         .split('|')
         .any(|p| matches_single_pattern(text, p.trim()))
+}
+
+fn matches_value_pattern(text: &str, pattern: &str) -> bool {
+    pattern
+        .split('|')
+        .map(str::trim)
+        .any(|p| !p.is_empty() && text.contains(p))
 }
 
 fn matches_single_pattern(text: &str, pattern: &str) -> bool {
@@ -195,6 +411,63 @@ impl RuleEngine {
     pub fn rule_count(&self) -> usize {
         self.rules.len()
     }
+
+    /// 获取规则加载统计
+    pub fn load_stats(&self) -> &RuleLoadStats {
+        &self.load_stats
+    }
+}
+
+fn classify_skip_reason(err: &str) -> String {
+    if err.contains("invalid type: map, expected a sequence") {
+        return "unsupported_syntax".to_string();
+    }
+    if err.contains("missing field") {
+        return "missing_field".to_string();
+    }
+    "deserialize_error".to_string()
+}
+
+fn print_load_summary(stats: &RuleLoadStats) {
+    println!(
+        "[rule-engine] loaded_rules={} skipped_rules={} legacy_total={} legacy_migratable={} legacy_unsupported={}",
+        stats.loaded_rules,
+        stats.skipped_rules,
+        stats.legacy_total,
+        stats.legacy_migratable_total,
+        stats.legacy_unsupported_total
+    );
+    if stats.skipped_rules == 0 {
+        return;
+    }
+
+    let mut reasons: Vec<_> = stats.skipped_by_reason.iter().collect();
+    reasons.sort_by(|a, b| b.1.cmp(a.1));
+    for (reason, count) in reasons {
+        println!("[rule-engine] skipped reason={} count={}", reason, count);
+    }
+
+    for sample in stats.skipped_samples.iter().take(10) {
+        eprintln!(
+            "[rule-engine] skipped file={} reason={} detail={}",
+            sample.path, sample.reason, sample.detail
+        );
+    }
+}
+
+fn maybe_fail_in_strict_mode(stats: &RuleLoadStats) -> Result<(), String> {
+    let strict = std::env::var("ARK_RULES_STRICT")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    if strict && stats.skipped_rules > 0 {
+        return Err(format!(
+            "严格模式启用 (ARK_RULES_STRICT=1)，规则加载跳过 {} 条，请修复后重试",
+            stats.skipped_rules
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -202,6 +475,52 @@ mod tests {
     use super::RuleEngine;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn base_rule(scene: &str) -> String {
+        format!(
+            r#"
+name: "{scene}"
+scene: "{scene}"
+priority: 10
+conditions:
+  - type: "event"
+    event_type: "transport.drop"
+root_cause_pattern:
+  primary: "test"
+solution_steps:
+  - step: 1
+    action: "noop"
+    manual: true
+related_evidences: ["transport.drop"]
+applicability:
+  min_confidence: 0.5
+"#
+        )
+    }
+
+    fn legacy_rule(scene: &str) -> String {
+        format!(
+            r#"
+name: "{scene}"
+scene: "{scene}"
+priority: 10
+conditions:
+  all:
+    - type: "event"
+      event_type: "transport.drop"
+      value_threshold: 10
+root_cause_pattern:
+  primary: "legacy"
+solution_steps:
+  - step: 1
+    action: "noop"
+    manual: true
+related_evidences: ["transport.drop"]
+applicability:
+  min_confidence: 0.5
+"#
+        )
+    }
 
     #[test]
     fn load_from_dir_skips_invalid_rule_files() {
@@ -236,6 +555,67 @@ applicability:
 
         let engine = RuleEngine::load_from_dir(&dir).expect("load rules");
         assert_eq!(engine.rule_count(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_from_dir_supports_manifest_pack_and_legacy() {
+        let uniq = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("ark-rule-manifest-test-{}", uniq));
+        fs::create_dir_all(dir.join("core")).expect("create core dir");
+        fs::create_dir_all(dir.join("legacy")).expect("create legacy dir");
+
+        fs::write(
+            dir.join("manifest.yaml"),
+            r#"
+version: 1
+packs:
+  - name: core
+    enabled: true
+    dir: core
+legacy:
+  enabled: true
+"#,
+        )
+        .expect("write manifest");
+
+        fs::write(
+            dir.join("core").join("core-rule.yaml"),
+            base_rule("scene_core"),
+        )
+        .expect("write core rule");
+        fs::write(
+            dir.join("legacy").join("legacy-rule.yaml"),
+            base_rule("scene_legacy"),
+        )
+        .expect("write legacy rule");
+
+        let engine = RuleEngine::load_from_dir(&dir).expect("load rules");
+        assert_eq!(engine.rule_count(), 2);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_from_dir_normalizes_legacy_conditions() {
+        let uniq = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("ark-rule-legacy-test-{}", uniq));
+        fs::create_dir_all(&dir).expect("create dir");
+
+        fs::write(dir.join("legacy-style.yaml"), legacy_rule("legacy_scene"))
+            .expect("write legacy rule");
+        let engine = RuleEngine::load_from_dir(&dir).expect("load rules");
+        assert_eq!(engine.rule_count(), 1);
+        assert_eq!(engine.load_stats().legacy_total, 1);
+        assert_eq!(engine.load_stats().legacy_migratable_total, 1);
+        assert_eq!(engine.load_stats().legacy_unsupported_total, 0);
 
         let _ = fs::remove_dir_all(&dir);
     }
