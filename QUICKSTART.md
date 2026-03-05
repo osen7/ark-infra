@@ -23,7 +23,7 @@
 ### 步骤 1: 构建项目
 
 ```bash
-cd x-infra
+cd ark-infra
 cargo build --release
 ```
 
@@ -134,6 +134,6 @@ telnet 127.0.0.1 9090
 
 ## 🎯 下一步
 
-- 查看 [README_USAGE.md](README_USAGE.md) 了解完整功能
+- 查看 [docs/INDEX.md](docs/INDEX.md) 了解完整功能文档导航
 - 查看 [examples/README.md](examples/README.md) 了解探针开发
 - 准备进入路线 B（eBPF 网络探针）或路线 C（大模型诊断）

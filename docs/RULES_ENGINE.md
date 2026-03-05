@@ -9,7 +9,7 @@
 ### 规则文件结构
 
 ```
-x-infra/
+ark-infra/
 ├── rules/
 │   ├── gpu-oom.yaml          # GPU OOM 场景规则
 │   ├── network-stall.yaml    # 网络阻塞场景规则

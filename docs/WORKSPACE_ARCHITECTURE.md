@@ -3,7 +3,7 @@
 ## 📦 项目结构
 
 ```
-x-infra/
+ark-infra/
 ├── Cargo.toml              # Workspace 根配置
 │
 ├── core/                   # 共享底座（ark-core）
@@ -81,6 +81,13 @@ agent ─┘
 - **hub** 和 **agent** 都依赖 **core**
 - **hub** 和 **agent** 之间无直接依赖
 - 通过 WebSocket 协议通信
+
+## 🧭 Workspace 边界与交付范围
+
+- 根 `Cargo.toml` 的 workspace `members` 当前仅包含：`core`、`agent`、`hub`。
+- `ark-probe-ebpf/` 是独立 eBPF 子项目，不在根 workspace 默认构建/测试范围内。
+- `examples/`（含 `examples/mock/`）用于探针示例与回归数据，不是生产二进制交付件。
+- `cargo build --workspace` 和默认 CI 的 Rust job 仅覆盖根 workspace；eBPF 子项目需进入其目录单独构建。
 
 ## 📡 通信协议
 

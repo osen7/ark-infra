@@ -48,7 +48,7 @@ cargo run -- run --probe examples/ark-probe-network.py
 
 **文档**: 
 - [eBPF 网络探针文档](../docs/EBPF_NETWORK_PROBE.md)
-- [eBPF 探针集成指南](EBPF_PROBE_INTEGRATION.md)
+- [eBPF CO-RE 实现说明](../ark-probe-ebpf/CO-RE_IMPLEMENTATION.md)
 
 ### 4. ark-probe-dummy.py（测试用）
 

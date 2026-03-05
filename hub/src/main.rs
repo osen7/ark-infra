@@ -44,6 +44,9 @@ struct Cli {
     /// Hub 事件窗口缓存大小
     #[arg(long, default_value_t = DEFAULT_EVENT_BUFFER_SIZE)]
     event_buffer_size: usize,
+    /// 允许 /api/v1/diagnose?execute=true 真正执行动作（默认关闭，仅 dry-run）
+    #[arg(long, default_value_t = false)]
+    allow_execute: bool,
 }
 
 #[tokio::main]
@@ -53,6 +56,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 ark-hub 启动中...");
     println!("📡 WebSocket 监听地址: ws://{}", cli.ws_listen);
     println!("🌐 HTTP API 监听地址: http://{}", cli.http_listen);
+    println!(
+        "🛡️ 动作执行开关: {}",
+        if cli.allow_execute {
+            "enable (允许 execute=true)"
+        } else {
+            "disable (强制 dry-run)"
+        }
+    );
 
     // 创建全局状态图
     let global_graph = Arc::new(StateGraph::new());
@@ -159,7 +170,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let k8s_ctrl = k8s_controller.clone();
         tokio::spawn(async move {
             // 创建 API 路由（包含 metrics 端点）
-            let api = create_api_routes(graph, conns, metrics, rules, event_buffer, k8s_ctrl);
+            let api = create_api_routes(
+                graph,
+                conns,
+                metrics,
+                rules,
+                event_buffer,
+                k8s_ctrl,
+                cli.allow_execute,
+            );
             let bind_addr: SocketAddr = match http_listen.parse() {
                 Ok(addr) => addr,
                 Err(e) => {
@@ -448,6 +467,12 @@ fn with_k8s_controller(
     warp::any().map(move || k8s_controller.clone())
 }
 
+fn with_allow_execute(
+    allow_execute: bool,
+) -> impl Filter<Extract = (bool,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || allow_execute)
+}
+
 /// 创建 HTTP API 路由
 fn create_api_routes(
     graph: Arc<StateGraph>,
@@ -456,6 +481,7 @@ fn create_api_routes(
     rules: Arc<RuleEngine>,
     event_buffer: Arc<RwLock<VecDeque<Event>>>,
     k8s_controller: Option<Arc<K8sController>>,
+    allow_execute: bool,
 ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     let graph_filter = with_graph(graph.clone());
     let conns_filter = with_connections(connections.clone());
@@ -463,6 +489,7 @@ fn create_api_routes(
     let rules_filter = with_rules(rules.clone());
     let event_buffer_filter = with_event_buffer(event_buffer.clone());
     let k8s_filter = with_k8s_controller(k8s_controller.clone());
+    let allow_execute_filter = with_allow_execute(allow_execute);
 
     // GET /metrics - Prometheus Metrics 端点
     let metrics_route = warp::path("metrics")
@@ -540,13 +567,15 @@ fn create_api_routes(
         .and(rules_filter)
         .and(event_buffer_filter)
         .and(k8s_filter)
+        .and(allow_execute_filter)
         .and_then(
             |params: std::collections::HashMap<String, String>,
              graph: Arc<StateGraph>,
              conns: Arc<DashMap<String, mpsc::UnboundedSender<Message>>>,
              rules: Arc<RuleEngine>,
              event_buffer: Arc<RwLock<VecDeque<Event>>>,
-             k8s_controller: Option<Arc<K8sController>>| async move {
+             k8s_controller: Option<Arc<K8sController>>,
+             allow_execute: bool| async move {
                 let job_id = if let Some(job_id) = params.get("job_id") {
                     job_id.to_string()
                 } else {
@@ -560,10 +589,11 @@ fn create_api_routes(
                     .and_then(|v| v.parse::<u64>().ok())
                     .unwrap_or(60)
                     .clamp(10, 3600);
-                let execute = params
+                let execute_requested = params
                     .get("execute")
                     .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                     .unwrap_or(false);
+                let execute = allow_execute && execute_requested;
                 let dry_run = !execute;
 
                 let now_ms = std::time::SystemTime::now()
@@ -653,6 +683,8 @@ fn create_api_routes(
                     "processes": processes,
                     "policy": policy,
                     "dry_run": dry_run,
+                    "execute_requested": execute_requested,
+                    "execute_enabled": allow_execute,
                     "execution": execution_results
                 })))
             },

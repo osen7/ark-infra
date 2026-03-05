@@ -28,6 +28,8 @@ spec:
           - "--http-listen"
           - "0.0.0.0:8081"
           - "--enable-k8s-controller"
+          # 默认不添加 --allow-execute，保持 dry-run
+          # - "--allow-execute"
         ports:
         - name: websocket
           containerPort: 8080

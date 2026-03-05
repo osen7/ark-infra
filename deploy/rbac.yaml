@@ -1,9 +1,8 @@
 # RBAC 配置：为 ark-hub 提供 Kubernetes API 权限
 # 
 # 权限说明：
-# - nodes: get, list, patch (用于打污点和查询节点状态)
-# - pods: get, list, delete (用于查询和驱逐 Pod)
-# - pods/eviction: create (用于优雅驱逐 Pod，尊重 PDB)
+# - 必需: nodes(get/list/patch) + pods(get/list)，用于读取状态和节点污点操作
+# - 可选(启用自动隔离/驱逐才需要): pods(delete) + pods/eviction(create)
 
 apiVersion: v1
 kind: ServiceAccount
@@ -27,12 +26,12 @@ rules:
     resources: ["nodes"]
     verbs: ["get", "list", "patch"]
   
-  # Pod 相关权限：查询和驱逐
+  # Pod 相关权限：查询必需；delete 仅自动驱逐时需要
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "delete"]
   
-  # Pod Eviction 权限：优雅驱逐（尊重 PDB）
+  # Pod Eviction 权限：仅自动驱逐时需要（尊重 PDB）
   - apiGroups: ["policy"]
     resources: ["pods/eviction"]
     verbs: ["create"]

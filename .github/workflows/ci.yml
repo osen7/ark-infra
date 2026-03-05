@@ -6,6 +6,42 @@ on:
   pull_request:
 
 jobs:
+  rules-change-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Enforce rules companion changes
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          bash scripts/check-rules-change.sh "${BASE_SHA}" "${HEAD_SHA}"
+
+  rules-package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate rules package
+        run: cargo test -p ark-core --test rules_package_validation
+
+  doc-links:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check markdown links
+        run: bash scripts/check-doc-links.sh
+
   rust:
     runs-on: ubuntu-latest
     steps:
