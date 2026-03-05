@@ -15,6 +15,7 @@ cargo build --release
 ```bash
 cargo run -p ark --release -- --help | head -n 5
 cargo run -p ark-hub --release -- --help | head -n 5
+cargo run -p ark --release -- doctor
 ```
 
 ## 1) 单机最短路径（无 eBPF，推荐先跑通）
@@ -26,6 +27,7 @@ cargo run -p ark --release -- run --probe examples/ark-probe-dummy.py
 # 终端 2：查询
 cargo run -p ark --release -- ps
 cargo run -p ark --release -- why 1234
+cargo run -p ark --release -- why 1234 --json
 ```
 
 成功判定（示例）：
@@ -116,4 +118,14 @@ Hub 默认强制 dry-run。只有显式开启 `--allow-execute` 才会执行 `ex
 
 ```bash
 cargo run -p ark-hub --release -- --enable-k8s-controller --allow-execute
+```
+
+## 6. Doctor 与 Why 的推荐用法
+
+```bash
+# 输出环境/规则/连通性检查结果（JSON 可直接喂 CI）
+cargo run -p ark --release -- doctor --json
+
+# 根因解释输出稳定 JSON（适合接入 UI 或归档）
+cargo run -p ark --release -- why 1234 --json
 ```

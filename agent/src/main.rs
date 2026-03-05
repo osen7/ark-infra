@@ -1,5 +1,6 @@
 mod audit;
 mod diag;
+mod doctor;
 #[allow(dead_code)]
 mod exec;
 #[allow(dead_code)]
@@ -22,6 +23,7 @@ use ark_core::event::EventBus;
 use ark_core::graph::StateGraph;
 use clap::{Parser, Subcommand};
 use diag::run_diagnosis;
+use doctor::{run_doctor, DoctorOptions};
 use exec::{FixEngine, SystemActuator};
 use hub_forwarder::{get_node_id, HubForwarder};
 use ipc::{default_socket_path, IpcClient, IpcServer};
@@ -77,6 +79,32 @@ enum Commands {
     Why {
         /// 目标进程 PID
         pid: u32,
+        /// 输出结构化 JSON（稳定字段，便于 CI/UI 消费）
+        #[arg(long)]
+        json: bool,
+        #[cfg(unix)]
+        /// Unix Domain Socket 路径（默认: /var/run/ark.sock 或 ~/.ark/ark.sock）
+        #[arg(long)]
+        socket_path: Option<PathBuf>,
+        #[cfg(windows)]
+        /// IPC 服务端口（默认: 9090）
+        #[arg(long, default_value_t = DEFAULT_IPC_PORT)]
+        port: u16,
+    },
+    /// 运行环境与连通性自检
+    Doctor {
+        /// 规则目录（默认: ./rules）
+        #[arg(long, default_value = "rules")]
+        rules_dir: PathBuf,
+        /// Hub HTTP API 地址（如 http://hub.example.com:8081）
+        #[arg(long)]
+        hub: Option<String>,
+        /// 严格模式：存在 FAIL 时返回非 0
+        #[arg(long)]
+        strict: bool,
+        /// 输出结构化 JSON
+        #[arg(long)]
+        json: bool,
         #[cfg(unix)]
         /// Unix Domain Socket 路径（默认: /var/run/ark.sock 或 ~/.ark/ark.sock）
         #[arg(long)]
@@ -191,12 +219,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             query_processes(port).await?;
         }
         #[cfg(unix)]
-        Commands::Why { pid, socket_path } => {
-            query_why(pid, socket_path).await?;
+        Commands::Why {
+            pid,
+            json,
+            socket_path,
+        } => {
+            query_why(pid, json, socket_path).await?;
         }
         #[cfg(windows)]
-        Commands::Why { pid, port } => {
-            query_why(pid, port).await?;
+        Commands::Why { pid, json, port } => {
+            query_why(pid, json, port).await?;
+        }
+        #[cfg(unix)]
+        Commands::Doctor {
+            rules_dir,
+            hub,
+            strict,
+            json,
+            socket_path,
+        } => {
+            run_doctor(DoctorOptions {
+                rules_dir,
+                hub,
+                strict,
+                json,
+                socket_path,
+            })
+            .await?;
+        }
+        #[cfg(windows)]
+        Commands::Doctor {
+            rules_dir,
+            hub,
+            strict,
+            json,
+            port,
+        } => {
+            run_doctor(DoctorOptions {
+                rules_dir,
+                hub,
+                strict,
+                json,
+                port,
+            })
+            .await?;
         }
         Commands::Zap { pid } => {
             zap_process(pid).await?;
@@ -691,6 +757,7 @@ async fn query_processes(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(unix)]
 async fn query_why(
     pid: u32,
+    json_output: bool,
     socket_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::ipc::IpcClient;
@@ -711,48 +778,14 @@ async fn query_why(
     // 尝试场景识别和分析（需要访问图状态，当前通过 IPC 无法直接访问）
     // 这里先使用基本的根因分析，场景分析功能可以在未来扩展 IPC 接口后启用
 
-    if causes.is_empty() {
-        println!("进程 {} 未发现阻塞问题", pid.to_string().bright_green());
+    let report = build_why_report(pid, &causes);
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
 
-    println!("进程 {} 的阻塞根因分析:", pid.to_string().bright_green());
-    println!("{}", "-".repeat(60));
-
-    // 尝试识别场景类型（基于根因文本）
-    let scene_hint = if causes
-        .iter()
-        .any(|c| c.contains("GPU") || c.contains("OOM") || c.contains("显存"))
-    {
-        Some("GPU OOM")
-    } else if causes
-        .iter()
-        .any(|c| c.contains("网络") || c.contains("network") || c.contains("等待资源"))
-    {
-        Some("网络阻塞")
-    } else if causes
-        .iter()
-        .any(|c| c.contains("exit") || c.contains("crash") || c.contains("failed"))
-    {
-        Some("进程崩溃")
-    } else {
-        None
-    };
-
-    if let Some(scene) = scene_hint {
-        println!("  [场景识别] {}", scene.bright_cyan());
-        println!();
-    }
-
-    for (idx, cause) in causes.iter().enumerate() {
-        if cause.starts_with("等待资源") {
-            println!("  {}. {}", idx + 1, cause.bright_yellow());
-        } else if cause.contains("error") {
-            println!("  {}. {}", idx + 1, cause.bright_red());
-        } else {
-            println!("  {}. {}", idx + 1, cause);
-        }
-    }
+    print_why_report(&report, pid.to_string().bright_green().as_ref());
 
     Ok(())
 }
@@ -776,7 +809,11 @@ async fn zap_process(pid: u32) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(windows)]
-async fn query_why(pid: u32, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+async fn query_why(
+    pid: u32,
+    json_output: bool,
+    port: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
     use crate::ipc::IpcClient;
     use colored::*;
 
@@ -792,50 +829,125 @@ async fn query_why(pid: u32, port: u16) -> Result<(), Box<dyn std::error::Error>
     // 查询根因
     let causes = client.why_process(pid).await?;
 
-    if causes.is_empty() {
-        println!("进程 {} 未发现阻塞问题", pid.to_string().bright_green());
+    let report = build_why_report(pid, &causes);
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
 
-    println!("进程 {} 的阻塞根因分析:", pid.to_string().bright_green());
-    println!("{}", "-".repeat(60));
+    print_why_report(&report, pid.to_string().bright_green().as_ref());
 
-    // 尝试识别场景类型（基于根因文本）
-    let scene_hint = if causes
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct WhyReport {
+    pid: u32,
+    scene: Option<String>,
+    reason_codes: Vec<String>,
+    evidence: Vec<String>,
+    causes: Vec<String>,
+}
+
+fn build_why_report(pid: u32, causes: &[String]) -> WhyReport {
+    let scene = infer_scene(causes).map(ToString::to_string);
+    let reason_codes = infer_reason_codes(causes);
+    let evidence = causes.to_vec();
+    WhyReport {
+        pid,
+        scene,
+        reason_codes,
+        evidence,
+        causes: causes.to_vec(),
+    }
+}
+
+fn infer_scene(causes: &[String]) -> Option<&'static str> {
+    if causes.is_empty() {
+        return None;
+    }
+    if causes
         .iter()
         .any(|c| c.contains("GPU") || c.contains("OOM") || c.contains("显存"))
     {
-        Some("GPU OOM")
-    } else if causes
-        .iter()
-        .any(|c| c.contains("网络") || c.contains("network") || c.contains("等待资源"))
-    {
-        Some("网络阻塞")
-    } else if causes
-        .iter()
-        .any(|c| c.contains("exit") || c.contains("crash") || c.contains("failed"))
-    {
-        Some("进程崩溃")
-    } else {
-        None
-    };
-
-    if let Some(scene) = scene_hint {
-        println!("  [场景识别] {}", scene.bright_cyan());
-        println!();
+        return Some("gpu_oom");
     }
+    if causes.iter().any(|c| {
+        c.contains("网络")
+            || c.to_ascii_lowercase().contains("network")
+            || c.to_ascii_lowercase().contains("retransmit")
+    }) {
+        return Some("network_stall");
+    }
+    if causes.iter().any(|c| {
+        c.to_ascii_lowercase().contains("exit")
+            || c.to_ascii_lowercase().contains("crash")
+            || c.to_ascii_lowercase().contains("failed")
+    }) {
+        return Some("process_crash");
+    }
+    None
+}
 
-    for (idx, cause) in causes.iter().enumerate() {
-        if cause.starts_with("等待资源") {
-            println!("  {}. {}", idx + 1, cause.bright_yellow());
-        } else if cause.contains("error") {
-            println!("  {}. {}", idx + 1, cause.bright_red());
-        } else {
-            println!("  {}. {}", idx + 1, cause);
+fn infer_reason_codes(causes: &[String]) -> Vec<String> {
+    let mut codes = Vec::new();
+    for cause in causes {
+        let lower = cause.to_ascii_lowercase();
+        if lower.contains("retransmit") && !codes.iter().any(|c| c == "TCP_RETRANSMIT_BURST") {
+            codes.push("TCP_RETRANSMIT_BURST".to_string());
+        }
+        if (lower.contains("transport.drop") || lower.contains("packet drop"))
+            && !codes.iter().any(|c| c == "TRANSPORT_DROP_OBSERVED")
+        {
+            codes.push("TRANSPORT_DROP_OBSERVED".to_string());
+        }
+        if (lower.contains("oom") || cause.contains("显存") || lower.contains("out of memory"))
+            && !codes.iter().any(|c| c == "GPU_OOM")
+        {
+            codes.push("GPU_OOM".to_string());
+        }
+        if (cause.contains("等待资源") || lower.contains("resource wait"))
+            && !codes.iter().any(|c| c == "RESOURCE_WAIT")
+        {
+            codes.push("RESOURCE_WAIT".to_string());
+        }
+        if (lower.contains("crash") || lower.contains("exit") || lower.contains("segfault"))
+            && !codes.iter().any(|c| c == "PROCESS_CRASH")
+        {
+            codes.push("PROCESS_CRASH".to_string());
         }
     }
+    codes
+}
 
-    Ok(())
+fn print_why_report(report: &WhyReport, pid_display: &str) {
+    use colored::*;
+
+    if report.causes.is_empty() {
+        println!("进程 {} 未发现阻塞问题", pid_display);
+        return;
+    }
+
+    println!(
+        "Scene: {}",
+        report.scene.as_deref().unwrap_or("unknown").bright_cyan()
+    );
+    println!("Process: {}", pid_display);
+    println!();
+    println!("Reasons:");
+    if report.reason_codes.is_empty() {
+        println!(" - {}", "NO_REASON_CODE".bright_yellow());
+    } else {
+        for code in &report.reason_codes {
+            println!(" - {}", code.bright_yellow());
+        }
+    }
+    println!();
+    println!("Evidence:");
+    for evidence in &report.evidence {
+        println!(" - {}", evidence.bright_white());
+    }
 }
 
 /// AI 诊断：使用大模型分析进程问题

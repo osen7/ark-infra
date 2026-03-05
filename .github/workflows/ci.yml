@@ -82,6 +82,11 @@ jobs:
       - name: Rust test
         run: cargo test --workspace
 
+      - name: CLI smoke
+        run: |
+          cargo run -p ark -- --help >/dev/null
+          cargo run -p ark -- doctor --json >/dev/null
+
   helm:
     runs-on: ubuntu-latest
     steps:
