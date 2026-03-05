@@ -139,6 +139,16 @@ pub enum Condition {
         entity_id_pattern: Option<String>,
         metrics: Vec<MetricCondition>,
     },
+    /// 信号条件（由 Signal Engine 聚合后产出）
+    #[serde(rename = "signal")]
+    Signal {
+        signal: String,
+        entity_id_pattern: Option<String>,
+        op: ComparisonOp,
+        target: String,
+        #[serde(default = "default_value_type")]
+        value_type: ValueType,
+    },
     /// 任意条件（OR 逻辑）
     #[serde(rename = "any")]
     Any { conditions: Vec<Condition> },

@@ -5,9 +5,11 @@ priority: 80
 reason_codes:
   - "TCP_RETRANSMIT_BURST"
 conditions:
-  - type: "event"
-    event_type: "transport.drop"
-    value_pattern: "retransmit|drop"
+  - type: "signal"
+    signal: "network.tcp.retransmit_rate_1m"
+    op: "gt"
+    target: "0.03"
+    value_type: "numeric"
 root_cause_pattern:
   primary: "网络丢包和重传导致吞吐下降"
   secondary:
@@ -24,6 +26,7 @@ solution_steps:
     manual: true
 related_evidences:
   - "transport.drop"
+  - "signal.network.tcp.retransmit_rate_1m"
 applicability:
   min_confidence: 0.75
   required_events:

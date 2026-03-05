@@ -134,6 +134,36 @@ impl RuleMatcher {
                         .all(|metric| match_metric_condition(metric, &node.metadata))
                 })
             }
+            Condition::Signal {
+                signal,
+                entity_id_pattern,
+                op,
+                target,
+                value_type,
+            } => {
+                let prefix = format!("signal::{}::", signal);
+                let mut candidates: Vec<&crate::graph::Node> = nodes
+                    .values()
+                    .filter(|node| node.id.starts_with(&prefix))
+                    .collect();
+                if candidates.is_empty() {
+                    return false;
+                }
+                candidates.sort_by_key(|n| n.last_update);
+
+                candidates.iter().rev().any(|node| {
+                    let entity_part = node.id.strip_prefix(&prefix).unwrap_or("");
+                    if let Some(pattern) = entity_id_pattern {
+                        if !matches_pattern(entity_part, pattern) {
+                            return false;
+                        }
+                    }
+                    let Some(actual) = node.metadata.get("value") else {
+                        return false;
+                    };
+                    compare_value(actual, target, op, value_type.clone())
+                })
+            }
             Condition::Any { conditions } => {
                 // OR 逻辑：任意一个条件满足即可
                 for condition in conditions {
@@ -182,7 +212,16 @@ fn match_metric_condition(
         None => return false,
     };
 
-    match metric.value_type {
+    compare_value(
+        actual_str,
+        &metric.target,
+        &metric.op,
+        metric.value_type.clone(),
+    )
+}
+
+fn compare_value(actual_str: &str, target: &str, op: &ComparisonOp, value_type: ValueType) -> bool {
+    match value_type {
         ValueType::Numeric => {
             // 数值比较
             let actual_val = match actual_str.parse::<f64>() {
@@ -190,51 +229,51 @@ fn match_metric_condition(
                 Err(_) => return false, // 无法解析为数值，不匹配
             };
 
-            let target_val = match metric.target.parse::<f64>() {
+            let target_val = match target.parse::<f64>() {
                 Ok(v) => v,
                 Err(_) => return false,
             };
 
-            match metric.op {
+            match op {
                 ComparisonOp::Gt => actual_val > target_val,
                 ComparisonOp::Lt => actual_val < target_val,
                 ComparisonOp::Eq => (actual_val - target_val).abs() < 0.001, // 浮点数比较
                 ComparisonOp::Gte => actual_val >= target_val,
                 ComparisonOp::Lte => actual_val <= target_val,
                 ComparisonOp::Ne => (actual_val - target_val).abs() >= 0.001,
-                ComparisonOp::Contains => actual_str.contains(&metric.target),
+                ComparisonOp::Contains => actual_str.contains(target),
             }
         }
         ValueType::String => {
             // 字符串比较
-            match metric.op {
-                ComparisonOp::Eq => actual_str == metric.target.as_str(),
-                ComparisonOp::Ne => actual_str != metric.target.as_str(),
-                ComparisonOp::Contains => actual_str.contains(&metric.target),
+            match op {
+                ComparisonOp::Eq => actual_str == target,
+                ComparisonOp::Ne => actual_str != target,
+                ComparisonOp::Contains => actual_str.contains(target),
                 _ => false, // 其他操作符对字符串无效
             }
         }
         ValueType::Auto => {
             // 自动检测：先尝试数值，失败则用字符串
             if let (Ok(actual_val), Ok(target_val)) =
-                (actual_str.parse::<f64>(), metric.target.parse::<f64>())
+                (actual_str.parse::<f64>(), target.parse::<f64>())
             {
                 // 数值比较
-                match metric.op {
+                match op {
                     ComparisonOp::Gt => actual_val > target_val,
                     ComparisonOp::Lt => actual_val < target_val,
                     ComparisonOp::Eq => (actual_val - target_val).abs() < 0.001,
                     ComparisonOp::Gte => actual_val >= target_val,
                     ComparisonOp::Lte => actual_val <= target_val,
                     ComparisonOp::Ne => (actual_val - target_val).abs() >= 0.001,
-                    ComparisonOp::Contains => actual_str.contains(&metric.target),
+                    ComparisonOp::Contains => actual_str.contains(target),
                 }
             } else {
                 // 字符串比较
-                match metric.op {
-                    ComparisonOp::Eq => actual_str == metric.target.as_str(),
-                    ComparisonOp::Ne => actual_str != metric.target.as_str(),
-                    ComparisonOp::Contains => actual_str.contains(&metric.target),
+                match op {
+                    ComparisonOp::Eq => actual_str == target,
+                    ComparisonOp::Ne => actual_str != target,
+                    ComparisonOp::Contains => actual_str.contains(target),
                     _ => false,
                 }
             }

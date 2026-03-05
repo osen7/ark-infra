@@ -61,6 +61,19 @@ fn validate_condition(cond: &Value, ctx: &str) -> Result<(), String> {
                 }
                 Ok(())
             }
+            "signal" => {
+                expect_string(map, "signal", ctx)?;
+                expect_string(map, "target", ctx)?;
+                let op = map
+                    .get(Value::String("op".to_string()))
+                    .ok_or_else(|| format!("{} signal 条件缺少 `op`", ctx))?
+                    .as_str()
+                    .ok_or_else(|| format!("{} signal 字段 `op` 必须是字符串", ctx))?;
+                match op {
+                    "gt" | "lt" | "eq" | "gte" | "lte" | "ne" | "contains" => Ok(()),
+                    _ => Err(format!("{} signal 字段 `op` 非法: {}", ctx, op)),
+                }
+            }
             "all" | "any" => {
                 let nested = map
                     .get(&Value::String("conditions".to_string()))

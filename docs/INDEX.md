@@ -15,6 +15,7 @@
 - [ARCHITECTURE.md](ARCHITECTURE.md) - 系统架构与数据流
 - [WORKSPACE_ARCHITECTURE.md](WORKSPACE_ARCHITECTURE.md) - workspace 边界与职责
 - [RULES_ENGINE.md](RULES_ENGINE.md) - 规则格式与匹配机制
+- [SIGNALS.md](SIGNALS.md) - Signal Layer 设计与条件写法
 - [INCIDENT_CATALOG.md](INCIDENT_CATALOG.md) - AI Infra 事故 taxonomy 与 seed scenes
 - [EBPF_NETWORK_PROBE.md](EBPF_NETWORK_PROBE.md) - eBPF 网络探针说明
 - [EVENT_PROTOCOL.md](EVENT_PROTOCOL.md) - agent↔hub 事件协议与版本策略
