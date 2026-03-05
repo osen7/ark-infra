@@ -6,6 +6,7 @@
 pub mod event;
 pub mod graph;
 pub mod rules;
+pub mod signals;
 
 // 重新导出常用类型
 pub use event::{Event, EventBus, EventType};

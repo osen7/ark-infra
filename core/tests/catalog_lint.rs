@@ -106,10 +106,7 @@ fn scene_matches_id(scene: &str, id: &str) -> bool {
         return true;
     }
     if let Some((base, version)) = id.rsplit_once(".v") {
-        if !base.is_empty()
-            && !version.is_empty()
-            && version.chars().all(|c| c.is_ascii_digit())
-        {
+        if !base.is_empty() && !version.is_empty() && version.chars().all(|c| c.is_ascii_digit()) {
             return scene == base;
         }
     }
@@ -154,7 +151,8 @@ fn catalog_rules_lint() {
             id
         );
 
-        if let Some(owner) = scene_owner.insert(scene.to_string(), rule_path.display().to_string()) {
+        if let Some(owner) = scene_owner.insert(scene.to_string(), rule_path.display().to_string())
+        {
             panic!(
                 "duplicate scene `{}` across catalog packs: {} <-> {}",
                 scene,
@@ -193,10 +191,7 @@ fn catalog_rules_lint() {
             eprintln!("  - {} => {:?}", code, owners);
         }
         if total > SHARED_REASON_CODES_LOG_LIMIT {
-            eprintln!(
-                "  ... and {} more",
-                total - SHARED_REASON_CODES_LOG_LIMIT
-            );
+            eprintln!("  ... and {} more", total - SHARED_REASON_CODES_LOG_LIMIT);
         }
     }
 

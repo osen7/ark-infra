@@ -1,4 +1,5 @@
 use crate::event::{Event, EventType};
+use crate::signals::{SignalEngine, SignalRegistry, SignalValue};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 
@@ -39,6 +40,7 @@ pub enum NodeType {
 pub struct StateGraph {
     nodes: RwLock<HashMap<String, Node>>,
     edges: RwLock<Vec<Edge>>,
+    signals: RwLock<SignalEngine>,
     error_window_ms: u64, // 错误窗口时间（默认5分钟）
 }
 
@@ -48,6 +50,7 @@ impl StateGraph {
         Self {
             nodes: RwLock::new(HashMap::new()),
             edges: RwLock::new(Vec::new()),
+            signals: RwLock::new(SignalEngine::new(SignalRegistry::default_mvp())),
             error_window_ms: 5 * 60 * 1000, // 5分钟
         }
     }
@@ -90,8 +93,40 @@ impl StateGraph {
 
         // 清理过期错误（只保留近5分钟的错误）
         self.cleanup_old_errors(event.ts).await;
+        self.update_signals(event).await;
 
         Ok(())
+    }
+
+    async fn update_signals(&self, event: &Event) {
+        let points = {
+            let mut engine = self.signals.write().await;
+            engine.on_event(event)
+        };
+        if points.is_empty() {
+            return;
+        }
+
+        let mut nodes = self.nodes.write().await;
+        for point in points {
+            let signal_node_id = format!("signal::{}::{}", point.name, point.entity.id);
+            let mut metadata = HashMap::new();
+            if let SignalValue::Number(v) = point.value {
+                metadata.insert("value".to_string(), v.to_string());
+            }
+            metadata.insert("window_ms".to_string(), point.window_ms.to_string());
+            metadata.insert("unit".to_string(), point.unit);
+
+            nodes.insert(
+                signal_node_id.clone(),
+                Node {
+                    id: signal_node_id,
+                    node_type: NodeType::Resource,
+                    last_update: point.ts,
+                    metadata,
+                },
+            );
+        }
     }
 
     /// 处理进程状态事件
