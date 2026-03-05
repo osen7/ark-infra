@@ -5,6 +5,7 @@ use tokio::sync::RwLock;
 
 const EDGE_TTL_MS: u64 = 60 * 60 * 1000;
 const MAX_EDGES: usize = 100_000;
+const DEFAULT_CLEANUP_INTERVAL_MS: u64 = 30_000;
 
 /// 三大推导边类型
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -46,6 +47,8 @@ pub struct StateGraph {
     edge_index: RwLock<HashSet<EdgeKey>>,
     signals: RwLock<SignalEngine>,
     error_window_ms: u64, // 错误窗口时间（默认5分钟）
+    cleanup_interval_ms: u64,
+    last_cleanup_ts: RwLock<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -71,6 +74,8 @@ impl StateGraph {
             edge_index: RwLock::new(HashSet::new()),
             signals: RwLock::new(SignalEngine::new(SignalRegistry::default_mvp())),
             error_window_ms: 5 * 60 * 1000, // 5分钟
+            cleanup_interval_ms: DEFAULT_CLEANUP_INTERVAL_MS,
+            last_cleanup_ts: RwLock::new(0),
         }
     }
 
@@ -110,8 +115,15 @@ impl StateGraph {
             }
         }
 
-        // 清理过期错误（只保留近5分钟的错误）
-        self.cleanup_old_errors(event.ts).await;
+        // 周期性清理，避免每条事件都触发重清理
+        let should_cleanup = {
+            let last_cleanup = *self.last_cleanup_ts.read().await;
+            last_cleanup == 0 || event.ts.saturating_sub(last_cleanup) >= self.cleanup_interval_ms
+        };
+        if should_cleanup {
+            self.cleanup_old_errors(event.ts).await;
+            *self.last_cleanup_ts.write().await = event.ts;
+        }
         self.update_signals(event).await;
 
         Ok(())
