@@ -1,0 +1,40 @@
+id: cluster.cascade_failure.v1
+name: "集群级级联故障"
+scene: "cluster.cascade_failure"
+priority: 98
+reason_codes:
+  - "CASCADE_FAILURE"
+  - "BLAST_RADIUS_EXPANDING"
+conditions:
+  - type: "event"
+    event_type: "error.hw"
+    value_pattern: "xid|ecc|reset"
+  - type: "event"
+    event_type: "error.net"
+    value_pattern: "congestion|timeout|partition"
+  - type: "event"
+    event_type: "process.state"
+    value_pattern: "restart_loop|stalled"
+root_cause_pattern:
+  primary: "硬件与网络故障叠加触发作业级联重启"
+  secondary:
+    - "节点故障传播"
+    - "网络拥塞放大"
+solution_steps:
+  - step: 1
+    action: "立即标注事故并冻结高风险动作"
+    command: null
+    manual: true
+  - step: 2
+    action: "优先隔离故障节点"
+    command: "kubectl cordon <node>"
+    manual: true
+related_evidences:
+  - "error.hw"
+  - "error.net"
+  - "process.state"
+applicability:
+  min_confidence: 0.88
+  required_events:
+    - "error.hw"
+    - "error.net"

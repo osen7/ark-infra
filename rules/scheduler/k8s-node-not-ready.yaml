@@ -1,0 +1,30 @@
+id: scheduler.k8s.node_not_ready.v1
+name: "K8s 节点 NotReady"
+scene: "scheduler.k8s.node_not_ready"
+priority: 85
+reason_codes:
+  - "NODE_NOT_READY"
+conditions:
+  - type: "event"
+    event_type: "process.state"
+    value_pattern: "node_not_ready|notready"
+root_cause_pattern:
+  primary: "调度节点不可用导致任务排队"
+  secondary:
+    - "节点故障"
+    - "kubelet 异常"
+solution_steps:
+  - step: 1
+    action: "检查节点状态"
+    command: "kubectl get nodes"
+    manual: false
+  - step: 2
+    action: "迁移或驱逐受影响工作负载"
+    command: null
+    manual: true
+related_evidences:
+  - "process.state"
+applicability:
+  min_confidence: 0.78
+  required_events:
+    - "process.state"

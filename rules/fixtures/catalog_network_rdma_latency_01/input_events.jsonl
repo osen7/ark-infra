@@ -1,0 +1,2 @@
+{"ts":1,"event_type":"error.net","entity_id":"mlx5_0","job_id":"job-catalog-2","pid":202,"value":"rdma_latency_spike","node_id":"node-b"}
+{"ts":2,"event_type":"transport.drop","entity_id":"mlx5_0","job_id":"job-catalog-2","pid":202,"value":"retransmit_burst","node_id":"node-b"}

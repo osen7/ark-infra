@@ -1,0 +1,30 @@
+id: interconnect.nvlink.error.v1
+name: "NVLink 错误"
+scene: "interconnect.nvlink.error"
+priority: 88
+reason_codes:
+  - "NVLINK_ERROR"
+conditions:
+  - type: "event"
+    event_type: "topo.link_down"
+    value_pattern: "nvlink|NVLINK"
+root_cause_pattern:
+  primary: "NVLink 链路错误或降级"
+  secondary:
+    - "链路抖动"
+    - "拓扑异常"
+solution_steps:
+  - step: 1
+    action: "检查 NVLink 状态"
+    command: "nvidia-smi nvlink -s"
+    manual: false
+  - step: 2
+    action: "迁移受影响作业"
+    command: null
+    manual: true
+related_evidences:
+  - "topo.link_down"
+applicability:
+  min_confidence: 0.8
+  required_events:
+    - "topo.link_down"

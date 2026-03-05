@@ -1,0 +1,30 @@
+id: scheduler.gpu.fragmentation.v1
+name: "GPU 资源碎片化"
+scene: "scheduler.gpu.fragmentation"
+priority: 65
+reason_codes:
+  - "GPU_FRAGMENTATION"
+conditions:
+  - type: "event"
+    event_type: "intent.run"
+    value_pattern: "fragmentation|placement_conflict|insufficient_contiguous"
+root_cause_pattern:
+  primary: "GPU 资源碎片化导致调度失败"
+  secondary:
+    - "拓扑约束过强"
+    - "资源回收不及时"
+solution_steps:
+  - step: 1
+    action: "检查调度队列"
+    command: "kubectl get pods -A | rg Pending"
+    manual: false
+  - step: 2
+    action: "调整放置策略"
+    command: null
+    manual: true
+related_evidences:
+  - "intent.run"
+applicability:
+  min_confidence: 0.6
+  required_events:
+    - "intent.run"

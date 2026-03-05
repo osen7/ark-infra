@@ -1,0 +1,3 @@
+{"ts":1,"event_type":"error.hw","entity_id":"gpu-02","job_id":"job-catalog-3","pid":303,"value":"XID reset","node_id":"node-c"}
+{"ts":2,"event_type":"error.net","entity_id":"mlx5_3","job_id":"job-catalog-3","pid":303,"value":"network congestion timeout","node_id":"node-c"}
+{"ts":3,"event_type":"process.state","entity_id":"proc-303","job_id":"job-catalog-3","pid":303,"value":"restart_loop","node_id":"node-c"}

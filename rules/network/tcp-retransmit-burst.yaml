@@ -1,0 +1,31 @@
+id: network.tcp.retransmit_burst.v1
+name: "TCP 重传突增"
+scene: "network.tcp.retransmit_burst"
+priority: 80
+reason_codes:
+  - "TCP_RETRANSMIT_BURST"
+conditions:
+  - type: "event"
+    event_type: "transport.drop"
+    value_pattern: "retransmit|drop"
+    value_threshold: 5
+root_cause_pattern:
+  primary: "网络丢包和重传导致吞吐下降"
+  secondary:
+    - "链路拥塞"
+    - "NIC 异常"
+solution_steps:
+  - step: 1
+    action: "检查重传率"
+    command: "netstat -s | rg retrans"
+    manual: false
+  - step: 2
+    action: "排查交换机拥塞"
+    command: null
+    manual: true
+related_evidences:
+  - "transport.drop"
+applicability:
+  min_confidence: 0.75
+  required_events:
+    - "transport.drop"

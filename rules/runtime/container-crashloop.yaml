@@ -1,0 +1,34 @@
+id: runtime.container.crashloop.v1
+name: "容器 CrashLoop"
+scene: "runtime.container.crashloop"
+priority: 70
+reason_codes:
+  - "CONTAINER_CRASHLOOP"
+conditions:
+  - type: "event"
+    event_type: "process.state"
+    value_pattern: "crash|exit|restart"
+  - type: "event"
+    event_type: "intent.run"
+    value_pattern: "pod|container"
+root_cause_pattern:
+  primary: "容器启动后频繁异常退出"
+  secondary:
+    - "镜像/配置错误"
+    - "依赖服务不可用"
+solution_steps:
+  - step: 1
+    action: "查看 Pod 事件和日志"
+    command: "kubectl describe pod <pod>"
+    manual: false
+  - step: 2
+    action: "回滚最近配置变更"
+    command: null
+    manual: true
+related_evidences:
+  - "process.state"
+  - "intent.run"
+applicability:
+  min_confidence: 0.68
+  required_events:
+    - "process.state"

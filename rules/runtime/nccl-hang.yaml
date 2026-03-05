@@ -1,0 +1,35 @@
+id: runtime.nccl.hang.v1
+name: "NCCL 通信 Hang"
+scene: "runtime.nccl.hang"
+priority: 92
+reason_codes:
+  - "NCCL_HANG"
+  - "ALLREDUCE_TIMEOUT"
+conditions:
+  - type: "event"
+    event_type: "error.net"
+    value_pattern: "nccl|allreduce|timeout"
+  - type: "event"
+    event_type: "process.state"
+    value_pattern: "hang|stalled|waiting"
+root_cause_pattern:
+  primary: "分布式通信超时导致训练停滞"
+  secondary:
+    - "网络层抖动"
+    - "拓扑配置不一致"
+solution_steps:
+  - step: 1
+    action: "检查 NCCL 日志级别输出"
+    command: "NCCL_DEBUG=INFO"
+    manual: true
+  - step: 2
+    action: "检查网卡绑定配置"
+    command: null
+    manual: true
+related_evidences:
+  - "error.net"
+  - "process.state"
+applicability:
+  min_confidence: 0.82
+  required_events:
+    - "error.net"

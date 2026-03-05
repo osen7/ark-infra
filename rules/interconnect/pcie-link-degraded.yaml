@@ -1,0 +1,30 @@
+id: interconnect.pcie.link_degraded.v1
+name: "PCIe 链路降级"
+scene: "interconnect.pcie.link_degraded"
+priority: 78
+reason_codes:
+  - "PCIE_LINK_DEGRADED"
+conditions:
+  - type: "event"
+    event_type: "topo.link_down"
+    value_pattern: "pcie|PCIe|degraded"
+root_cause_pattern:
+  primary: "PCIe 链路降速影响跨卡通信"
+  secondary:
+    - "硬件链路异常"
+    - "BIOS/固件配置问题"
+solution_steps:
+  - step: 1
+    action: "检查 PCIe 协商速率"
+    command: "lspci -vv | rg LnkSta"
+    manual: false
+  - step: 2
+    action: "重新调度作业"
+    command: null
+    manual: true
+related_evidences:
+  - "topo.link_down"
+applicability:
+  min_confidence: 0.72
+  required_events:
+    - "topo.link_down"

@@ -1,0 +1,31 @@
+id: hardware.gpu.throttle.v1
+name: "GPU 热降频"
+scene: "hardware.gpu.throttle"
+priority: 82
+reason_codes:
+  - "GPU_THROTTLE"
+conditions:
+  - type: "event"
+    event_type: "error.hw"
+    value_pattern: "throttle|overheat|thermal"
+root_cause_pattern:
+  primary: "GPU 热/功耗导致降频"
+  secondary:
+    - "散热不足"
+    - "功率墙限制"
+solution_steps:
+  - step: 1
+    action: "检查温度和功耗"
+    command: "nvidia-smi --query-gpu=temperature.gpu,power.draw --format=csv"
+    manual: false
+  - step: 2
+    action: "降低并发或批大小"
+    command: null
+    manual: true
+related_evidences:
+  - "error.hw"
+  - "compute.util"
+applicability:
+  min_confidence: 0.75
+  required_events:
+    - "error.hw"

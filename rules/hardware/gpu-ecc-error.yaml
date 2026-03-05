@@ -1,0 +1,31 @@
+id: hardware.gpu.ecc_error.v1
+name: "GPU ECC 错误"
+scene: "hardware.gpu.ecc_error"
+priority: 95
+reason_codes:
+  - "GPU_ECC_ERROR"
+conditions:
+  - type: "event"
+    event_type: "error.hw"
+    value_pattern: "ECC|ecc|XID"
+root_cause_pattern:
+  primary: "GPU HBM/ECC 错误导致计算不稳定"
+  secondary:
+    - "高温导致 ECC 错误率上升"
+    - "GPU 硬件异常"
+solution_steps:
+  - step: 1
+    action: "收集 GPU 错误日志"
+    command: "nvidia-smi -q -d ECC"
+    manual: false
+  - step: 2
+    action: "隔离故障节点"
+    command: "kubectl cordon <node>"
+    manual: true
+related_evidences:
+  - "error.hw"
+  - "gpu.ecc"
+applicability:
+  min_confidence: 0.8
+  required_events:
+    - "error.hw"

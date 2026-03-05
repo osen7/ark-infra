@@ -3,6 +3,27 @@ packs:
   - name: core
     enabled: true
     dir: core
+  - name: hardware
+    enabled: true
+    dir: hardware
+  - name: interconnect
+    enabled: true
+    dir: interconnect
+  - name: network
+    enabled: true
+    dir: network
+  - name: runtime
+    enabled: true
+    dir: runtime
+  - name: scheduler
+    enabled: true
+    dir: scheduler
+  - name: storage
+    enabled: true
+    dir: storage
+  - name: cluster
+    enabled: true
+    dir: cluster
   - name: nvidia
     enabled: true
     dir: nvidia

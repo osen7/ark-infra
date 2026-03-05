@@ -1,0 +1,34 @@
+id: storage.checkpoint.io_timeout.v1
+name: "Checkpoint IO 超时"
+scene: "storage.checkpoint.io_timeout"
+priority: 84
+reason_codes:
+  - "CHECKPOINT_IO_TIMEOUT"
+conditions:
+  - type: "event"
+    event_type: "storage.qdepth"
+    value_threshold: 50
+  - type: "event"
+    event_type: "process.state"
+    value_pattern: "checkpoint_timeout|checkpoint_fail"
+root_cause_pattern:
+  primary: "存储队列堆积导致 checkpoint 超时"
+  secondary:
+    - "后端存储拥塞"
+    - "IO 路径异常"
+solution_steps:
+  - step: 1
+    action: "检查存储延迟和队列"
+    command: "iostat -x 1 3"
+    manual: false
+  - step: 2
+    action: "降低 checkpoint 频率"
+    command: null
+    manual: true
+related_evidences:
+  - "storage.qdepth"
+  - "process.state"
+applicability:
+  min_confidence: 0.76
+  required_events:
+    - "storage.qdepth"

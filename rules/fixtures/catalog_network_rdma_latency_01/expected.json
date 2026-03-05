@@ -1,0 +1,5 @@
+{
+  "expect_scenes": ["network.rdma.latency_spike"],
+  "expect_reason_codes": ["RDMA_LATENCY_SPIKE"],
+  "expect_evidence_contains": ["transport.drop", "error.net"]
+}
