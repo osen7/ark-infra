@@ -126,6 +126,15 @@ cargo run -p ark-hub --release -- --enable-k8s-controller --allow-execute
 # 输出环境/规则/连通性检查结果（JSON 可直接喂 CI）
 cargo run -p ark --release -- doctor --json
 
+# 可选：附加规则/fixtures 健康检查（不依赖 cargo test）
+cargo run -p ark --release -- doctor --check-rules-validate --check-fixtures
+
 # 根因解释输出稳定 JSON（适合接入 UI 或归档）
 cargo run -p ark --release -- why 1234 --json
 ```
+
+`ark doctor --strict` 退出码约定：
+
+- `0`: 全部 OK 或仅 WARN
+- `2`: 存在 FAIL
+- `3`: 参数/配置错误（如 rules 目录不存在）
