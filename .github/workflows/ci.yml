@@ -88,7 +88,7 @@ jobs:
           cargo run -p ark -- --help >/dev/null
           cargo run -p ark -- doctor --json >/dev/null
           WHY_JSON="$(cargo run -q -p ark -- why 999999 --json 2>/dev/null || true)"
-          echo "${WHY_JSON}" | rg '"schema_version"\s*:\s*1' >/dev/null
+          echo "${WHY_JSON}" | grep -E '"schema_version"[[:space:]]*:[[:space:]]*1' >/dev/null
 
   helm:
     runs-on: ubuntu-latest

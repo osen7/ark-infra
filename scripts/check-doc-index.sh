@@ -16,7 +16,7 @@ while IFS= read -r doc; do
     continue
   fi
 
-  if ! rg -q "\(${base//./\\.}\)" "${index_file}"; then
+  if ! grep -Eq "\(${base//./\\.}\)" "${index_file}"; then
     echo "[doc-index] not referenced in INDEX.md: ${base}"
     errors=1
   fi
