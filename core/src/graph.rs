@@ -719,4 +719,63 @@ mod tests {
             metrics.edges_total
         );
     }
+
+    #[tokio::test]
+    async fn cleanup_runs_on_interval() {
+        let graph = StateGraph::new();
+
+        let start_event = Event {
+            ts: 1_000,
+            event_type: EventType::ProcessState,
+            entity_id: "proc".to_string(),
+            job_id: Some("job-1".to_string()),
+            pid: Some(2001),
+            value: "start".to_string(),
+            node_id: Some("node-a".to_string()),
+        };
+        graph
+            .process_event(&start_event)
+            .await
+            .expect("process start event");
+
+        let exit_event = Event {
+            ts: 2_000, // within cleanup interval, should not trigger cleanup
+            event_type: EventType::ProcessState,
+            entity_id: "proc".to_string(),
+            job_id: Some("job-1".to_string()),
+            pid: Some(2001),
+            value: "exit".to_string(),
+            node_id: Some("node-a".to_string()),
+        };
+        graph
+            .process_event(&exit_event)
+            .await
+            .expect("process exit event");
+
+        let nodes_after_exit = graph.get_nodes_async().await;
+        assert!(
+            nodes_after_exit.contains_key("node-a::pid-2001"),
+            "cleanup should not run before interval"
+        );
+
+        let trigger_cleanup_event = Event {
+            ts: 32_000, // exceed default 30s cleanup interval
+            event_type: EventType::ComputeUtil,
+            entity_id: "gpu-0".to_string(),
+            job_id: Some("job-2".to_string()),
+            pid: Some(3001),
+            value: "80".to_string(),
+            node_id: Some("node-a".to_string()),
+        };
+        graph
+            .process_event(&trigger_cleanup_event)
+            .await
+            .expect("process cleanup trigger event");
+
+        let nodes_after_cleanup = graph.get_nodes_async().await;
+        assert!(
+            !nodes_after_cleanup.contains_key("node-a::pid-2001"),
+            "cleanup should remove exited process after interval"
+        );
+    }
 }
