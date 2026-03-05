@@ -35,6 +35,7 @@ jobs:
         run: |
           cargo test -p ark-core --test rules_package_validation
           cargo test -p ark-core --test rules_fixtures
+          cargo test -p ark-core --test catalog_lint
 
   rules-strict:
     runs-on: ubuntu-latest

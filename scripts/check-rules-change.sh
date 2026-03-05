@@ -74,6 +74,29 @@ if [[ -z "${changed_companion}" ]]; then
   exit 1
 fi
 
+catalog_rules_changed="$(
+  echo "${changed_rules}" \
+    | rg '^rules/(hardware|interconnect|network|runtime|scheduler|storage|cluster)/.+\.(yaml|yml)$' \
+    || true
+)"
+
+if [[ -n "${catalog_rules_changed}" ]]; then
+  changed_catalog_fixtures="$(
+    echo "${changed_files}" \
+      | rg '^rules/fixtures/catalog_' \
+      || true
+  )"
+  if [[ -z "${changed_catalog_fixtures}" ]]; then
+    echo "[rules-gate] failed."
+    echo "[rules-gate] catalog rules changed but no catalog fixture changes found."
+    echo "[rules-gate] changed catalog rules:"
+    echo "${catalog_rules_changed}" | sed 's/^/  - /'
+    echo "[rules-gate] expected at least one companion file under rules/fixtures/catalog_*/"
+    echo "[rules-gate] or add PR label: no-fixture-needed"
+    exit 1
+  fi
+fi
+
 echo "[rules-gate] pass."
 echo "[rules-gate] changed rules:"
 echo "${changed_rules}" | sed 's/^/  - /'
