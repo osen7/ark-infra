@@ -277,6 +277,18 @@ impl HubForwarder {
 
         Err("WebSocket 连接未建立".into())
     }
+
+    /// 推送事件，失败时自动重连并重试一次。
+    pub async fn forward_event_with_retry(
+        &mut self,
+        event: Event,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if self.forward_event(event.clone()).await.is_ok() {
+            return Ok(());
+        }
+        self.reconnect().await?;
+        self.forward_event(event).await
+    }
 }
 
 /// Hub 命令结构
@@ -302,4 +314,96 @@ pub fn get_node_id() -> String {
     std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .unwrap_or_else(|_| "unknown-node".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HubForwarder;
+    use ark_core::event::{Event, EventType};
+    use futures_util::StreamExt;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+    #[tokio::test]
+    #[ignore = "requires local TCP socket permissions"]
+    async fn forward_event_with_retry_reconnects_when_sender_missing() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let ws_url = format!("ws://{}", addr);
+
+        let (msg_tx, msg_rx) = oneshot::channel::<String>();
+        let delivered = Arc::new(AtomicBool::new(false));
+        let delivered_flag = Arc::clone(&delivered);
+        let sender_cell = Arc::new(std::sync::Mutex::new(Some(msg_tx)));
+        let sender_cell_bg = Arc::clone(&sender_cell);
+
+        tokio::spawn(async move {
+            while !delivered_flag.load(Ordering::Relaxed) {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let delivered_conn = Arc::clone(&delivered_flag);
+                let sender_cell_conn = Arc::clone(&sender_cell_bg);
+                tokio::spawn(async move {
+                    let Ok(ws) = accept_async(stream).await else {
+                        return;
+                    };
+                    let (_, mut read) = ws.split();
+                    while let Some(msg) = read.next().await {
+                        let Ok(Message::Text(text)) = msg else {
+                            continue;
+                        };
+                        if !delivered_conn.swap(true, Ordering::SeqCst) {
+                            let tx_opt = sender_cell_conn.lock().ok().and_then(|mut g| g.take());
+                            if let Some(tx) = tx_opt {
+                                let _ = tx.send(text.to_string());
+                            }
+                        }
+                        break;
+                    }
+                });
+            }
+        });
+
+        let mut forwarder = HubForwarder::new(ws_url, "node-test".to_string());
+        forwarder.connect().await.expect("connect");
+
+        // 模拟连接状态丢失，触发重连路径。
+        forwarder.ws_sender = None;
+
+        let event = Event {
+            ts: 1,
+            event_type: EventType::ErrorNet,
+            entity_id: "eth0".to_string(),
+            job_id: Some("job-1".to_string()),
+            pid: Some(42),
+            value: "drop".to_string(),
+            node_id: None,
+        };
+
+        forwarder
+            .forward_event_with_retry(event)
+            .await
+            .expect("forward with retry");
+
+        let payload = tokio::time::timeout(std::time::Duration::from_secs(3), msg_rx)
+            .await
+            .expect("receive timeout")
+            .expect("receive payload");
+        assert!(
+            payload.contains("\"kind\":\"event\""),
+            "payload={}",
+            payload
+        );
+        assert!(
+            payload.contains("\"agent_id\":\"node-test\""),
+            "payload={}",
+            payload
+        );
+    }
 }

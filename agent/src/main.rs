@@ -474,29 +474,10 @@ async fn run_daemon(
                         if let Some(ref forwarder_arc) = hub_forwarder {
                             let mut forwarder = forwarder_arc.write().await;
                             if forwarder.should_forward(&event).await {
-                                let send_err = match forwarder.forward_event(event.clone()).await {
-                                    Ok(()) => None,
-                                    Err(e) => Some(e.to_string()),
-                                };
-                                if let Some(send_err) = send_err {
-                                    eprintln!("[ark] 推送事件到 Hub 失败: {}，尝试重连", send_err);
-                                    match forwarder.reconnect().await {
-                                        Ok(()) => {
-                                            if let Err(retry_err) =
-                                                forwarder.forward_event(event.clone()).await
-                                            {
-                                                eprintln!(
-                                                    "[ark] 重连后重试推送失败: {}",
-                                                    retry_err
-                                                );
-                                            } else {
-                                                println!("[ark] Hub 重连成功，事件已补发");
-                                            }
-                                        }
-                                        Err(reconnect_err) => {
-                                            eprintln!("[ark] Hub 重连失败: {}", reconnect_err);
-                                        }
-                                    }
+                                if let Err(e) =
+                                    forwarder.forward_event_with_retry(event.clone()).await
+                                {
+                                    eprintln!("[ark] 推送事件到 Hub 失败(含重试): {}", e);
                                 }
                             }
                         }
@@ -625,29 +606,10 @@ async fn run_daemon(
                         if let Some(ref forwarder_arc) = hub_forwarder {
                             let mut forwarder = forwarder_arc.write().await;
                             if forwarder.should_forward(&event).await {
-                                let send_err = match forwarder.forward_event(event.clone()).await {
-                                    Ok(()) => None,
-                                    Err(e) => Some(e.to_string()),
-                                };
-                                if let Some(send_err) = send_err {
-                                    eprintln!("[ark] 推送事件到 Hub 失败: {}，尝试重连", send_err);
-                                    match forwarder.reconnect().await {
-                                        Ok(()) => {
-                                            if let Err(retry_err) =
-                                                forwarder.forward_event(event.clone()).await
-                                            {
-                                                eprintln!(
-                                                    "[ark] 重连后重试推送失败: {}",
-                                                    retry_err
-                                                );
-                                            } else {
-                                                println!("[ark] Hub 重连成功，事件已补发");
-                                            }
-                                        }
-                                        Err(reconnect_err) => {
-                                            eprintln!("[ark] Hub 重连失败: {}", reconnect_err);
-                                        }
-                                    }
+                                if let Err(e) =
+                                    forwarder.forward_event_with_retry(event.clone()).await
+                                {
+                                    eprintln!("[ark] 推送事件到 Hub 失败(含重试): {}", e);
                                 }
                             }
                         }
