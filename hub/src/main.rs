@@ -12,9 +12,12 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::fs::{self, File, OpenOptions};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use warp::{Filter, Reply};
 mod k8s_controller;
@@ -24,6 +27,9 @@ use metrics::HubMetricsCollector;
 
 const DEFAULT_RULES_DIR: &str = "rules";
 const DEFAULT_EVENT_BUFFER_SIZE: usize = 20_000;
+const DEFAULT_WAL_PATH: &str = "tmp/hub-events.wal.jsonl";
+
+type WalWriter = Arc<Mutex<File>>;
 
 #[derive(Parser)]
 #[command(name = "ark-hub")]
@@ -44,6 +50,9 @@ struct Cli {
     /// Hub 事件窗口缓存大小
     #[arg(long, default_value_t = DEFAULT_EVENT_BUFFER_SIZE)]
     event_buffer_size: usize,
+    /// 事件 WAL 文件路径（JSONL，启动时自动回放）
+    #[arg(long, default_value = DEFAULT_WAL_PATH)]
+    wal_path: String,
     /// 允许 /api/v1/diagnose?execute=true 真正执行动作（默认关闭，仅 dry-run）
     #[arg(long, default_value_t = false)]
     allow_execute: bool,
@@ -80,6 +89,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 事件窗口缓存（用于诊断接口）
     let event_buffer = Arc::new(RwLock::new(VecDeque::with_capacity(cli.event_buffer_size)));
     let event_buffer_size = cli.event_buffer_size;
+    let wal_path = cli.wal_path.clone();
+
+    // 启动时回放历史 WAL，恢复内存状态图与窗口缓存
+    let replayed = replay_wal(
+        &wal_path,
+        Arc::clone(&global_graph),
+        Arc::clone(&event_buffer),
+        event_buffer_size,
+    )
+    .await?;
+    if replayed > 0 {
+        println!("♻️  已从 WAL 回放事件: {} 条", replayed);
+    }
+
+    // 打开 WAL 追加写句柄
+    let wal_writer = Some(open_wal_writer(&wal_path).await?);
 
     // 创建 K8s 控制器（如果启用）
     let k8s_controller = if cli.enable_k8s_controller {
@@ -111,6 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let k8s_ctrl = k8s_controller.clone();
         let metrics = Arc::clone(&metrics);
         let event_buffer = Arc::clone(&event_buffer);
+        let wal_writer = wal_writer.clone();
         tokio::spawn(async move {
             let listener = TcpListener::bind(&ws_listen).await?;
             println!("✅ WebSocket 服务器已启动，等待节点连接...");
@@ -121,6 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let k8s_ctrl = k8s_ctrl.clone();
                 let metrics = Arc::clone(&metrics);
                 let event_buffer = Arc::clone(&event_buffer);
+                let wal_writer = wal_writer.clone();
                 tokio::spawn(async move {
                     if let Err(e) = handle_connection(
                         stream,
@@ -131,6 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         metrics,
                         event_buffer,
                         event_buffer_size,
+                        wal_writer,
                     )
                     .await
                     {
@@ -211,6 +239,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+async fn open_wal_writer(path: &str) -> Result<WalWriter, Box<dyn std::error::Error>> {
+    ensure_parent_dir(path).await?;
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await?;
+    Ok(Arc::new(Mutex::new(file)))
+}
+
+async fn replay_wal(
+    path: &str,
+    graph: Arc<StateGraph>,
+    event_buffer: Arc<RwLock<VecDeque<Event>>>,
+    event_buffer_size: usize,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    if !Path::new(path).exists() {
+        return Ok(0);
+    }
+
+    let file = File::open(path).await?;
+    let mut reader = BufReader::new(file).lines();
+    let mut replayed = 0usize;
+
+    while let Some(line) = reader.next_line().await? {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let event: Event = match serde_json::from_str(trimmed) {
+            Ok(event) => event,
+            Err(e) => {
+                eprintln!("[hub] 跳过损坏 WAL 行: {}", e);
+                continue;
+            }
+        };
+
+        if let Err(e) = graph.process_event(&event).await {
+            eprintln!("[hub] 回放事件失败: {}", e);
+            continue;
+        }
+
+        {
+            let mut buf = event_buffer.write().await;
+            if buf.len() >= event_buffer_size {
+                buf.pop_front();
+            }
+            buf.push_back(event);
+        }
+        replayed += 1;
+    }
+
+    Ok(replayed)
+}
+
+async fn append_wal_event(writer: &WalWriter, event: &Event) -> Result<(), std::io::Error> {
+    let mut file = writer.lock().await;
+    let mut line = serde_json::to_vec(event)
+        .map_err(|e| std::io::Error::other(format!("serialize wal event: {}", e)))?;
+    line.push(b'\n');
+    file.write_all(&line).await
+}
+
+async fn ensure_parent_dir(path: &str) -> Result<(), std::io::Error> {
+    let p = PathBuf::from(path);
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).await?;
+        }
+    }
+    Ok(())
+}
+
 /// 处理单个 WebSocket 连接
 #[allow(clippy::too_many_arguments)]
 async fn handle_connection(
@@ -222,6 +323,7 @@ async fn handle_connection(
     metrics: Arc<HubMetricsCollector>,
     event_buffer: Arc<RwLock<VecDeque<Event>>>,
     event_buffer_size: usize,
+    wal_writer: Option<WalWriter>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("[hub] 新节点连接: {}", addr);
 
@@ -281,6 +383,11 @@ async fn handle_connection(
                                     buf.pop_front();
                                 }
                                 buf.push_back(event.clone());
+                            }
+                            if let Some(writer) = wal_writer.as_ref() {
+                                if let Err(e) = append_wal_event(writer, &event).await {
+                                    eprintln!("[hub] 写入 WAL 失败: {}", e);
+                                }
                             }
 
                             // 检测不可逆故障并触发 K8s 操作
