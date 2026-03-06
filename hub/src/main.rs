@@ -29,7 +29,13 @@ const DEFAULT_RULES_DIR: &str = "rules";
 const DEFAULT_EVENT_BUFFER_SIZE: usize = 20_000;
 const DEFAULT_WAL_PATH: &str = "tmp/hub-events.wal.jsonl";
 
-type WalWriter = Arc<Mutex<File>>;
+struct WalState {
+    file: File,
+    path: PathBuf,
+    max_bytes: u64,
+}
+
+type WalWriter = Arc<Mutex<WalState>>;
 
 #[derive(Parser)]
 #[command(name = "ark-hub")]
@@ -53,6 +59,9 @@ struct Cli {
     /// 事件 WAL 文件路径（JSONL，启动时自动回放）
     #[arg(long, default_value = DEFAULT_WAL_PATH)]
     wal_path: String,
+    /// 事件 WAL 最大大小（MB），达到后轮转为 .1
+    #[arg(long, default_value_t = 256)]
+    wal_max_mb: u64,
     /// 允许 /api/v1/diagnose?execute=true 真正执行动作（默认关闭，仅 dry-run）
     #[arg(long, default_value_t = false)]
     allow_execute: bool,
@@ -104,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 打开 WAL 追加写句柄
-    let wal_writer = Some(open_wal_writer(&wal_path).await?);
+    let wal_writer = Some(open_wal_writer(&wal_path, cli.wal_max_mb).await?);
 
     // 创建 K8s 控制器（如果启用）
     let k8s_controller = if cli.enable_k8s_controller {
@@ -239,14 +248,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn open_wal_writer(path: &str) -> Result<WalWriter, Box<dyn std::error::Error>> {
+async fn open_wal_writer(
+    path: &str,
+    wal_max_mb: u64,
+) -> Result<WalWriter, Box<dyn std::error::Error>> {
     ensure_parent_dir(path).await?;
     let file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .await?;
-    Ok(Arc::new(Mutex::new(file)))
+    let max_bytes = wal_max_mb.saturating_mul(1024 * 1024);
+    Ok(Arc::new(Mutex::new(WalState {
+        file,
+        path: PathBuf::from(path),
+        max_bytes,
+    })))
 }
 
 async fn replay_wal(
@@ -295,11 +312,15 @@ async fn replay_wal(
 }
 
 async fn append_wal_event(writer: &WalWriter, event: &Event) -> Result<(), std::io::Error> {
-    let mut file = writer.lock().await;
+    let mut state = writer.lock().await;
     let mut line = serde_json::to_vec(event)
         .map_err(|e| std::io::Error::other(format!("serialize wal event: {}", e)))?;
     line.push(b'\n');
-    file.write_all(&line).await
+    let current_size = state.file.metadata().await?.len();
+    if state.max_bytes > 0 && current_size.saturating_add(line.len() as u64) > state.max_bytes {
+        rotate_wal(&mut state).await?;
+    }
+    state.file.write_all(&line).await
 }
 
 async fn ensure_parent_dir(path: &str) -> Result<(), std::io::Error> {
@@ -309,6 +330,27 @@ async fn ensure_parent_dir(path: &str) -> Result<(), std::io::Error> {
             fs::create_dir_all(parent).await?;
         }
     }
+    Ok(())
+}
+
+async fn rotate_wal(state: &mut WalState) -> Result<(), std::io::Error> {
+    let active_path = state.path.clone();
+    let rotated_path = PathBuf::from(format!("{}.1", active_path.display()));
+
+    // 关闭旧句柄并轮转文件
+    state.file.flush().await?;
+    if rotated_path.exists() {
+        fs::remove_file(&rotated_path).await?;
+    }
+    if active_path.exists() {
+        fs::rename(&active_path, &rotated_path).await?;
+    }
+
+    state.file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&active_path)
+        .await?;
     Ok(())
 }
 
