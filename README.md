@@ -110,7 +110,6 @@ kubectl get clusterrolebinding ark-hub-controller-binding
 
 - [文档索引](docs/INDEX.md) - 完整功能说明和专题文档导航
 - [最小可用快速开始](docs/quickstart.md) - 单机/集群/eBPF 三条最短路径
-- [快速开始（兼容）](QUICKSTART.md) - 旧版快速开始
 - [兼容性矩阵](docs/COMPATIBILITY_MATRIX.md) - 内核/K8s/GPU/RDMA 版本基线
 - [架构设计](docs/ARCHITECTURE.md) - 系统架构和数据流转详解
 - [Kubernetes 部署](deploy/README.md) - 生产级 K8s 部署指南

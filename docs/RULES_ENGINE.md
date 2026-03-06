@@ -256,13 +256,13 @@ impl RuleEngine {
 
 pub async fn run_diagnosis_with_rules(
     pid: u32,
-    port: u16,
+    socket_path: Option<std::path::PathBuf>,
 ) -> Result<Diagnosis, Box<dyn std::error::Error>> {
     // 1. 加载规则引擎
     let rule_engine = RuleEngine::load_from_dir("rules")?;
     
     // 2. 获取图状态和事件
-    let client = IpcClient::new(port);
+    let client = IpcClient::new(socket_path);
     let causes = client.why_process(pid).await?;
     let processes = client.list_processes().await?;
     
