@@ -45,6 +45,7 @@ pub struct StateGraph {
     nodes: RwLock<HashMap<String, Node>>,
     edges: RwLock<Vec<Edge>>,
     edge_index: RwLock<HashSet<EdgeKey>>,
+    edge_out_index: RwLock<HashMap<String, Vec<IndexedEdge>>>,
     signals: RwLock<SignalEngine>,
     error_window_ms: u64, // 错误窗口时间（默认5分钟）
     cleanup_interval_ms: u64,
@@ -55,6 +56,12 @@ pub struct StateGraph {
 struct EdgeKey {
     edge_type: EdgeType,
     from: String,
+    to: String,
+}
+
+#[derive(Debug, Clone)]
+struct IndexedEdge {
+    edge_type: EdgeType,
     to: String,
 }
 
@@ -72,6 +79,7 @@ impl StateGraph {
             nodes: RwLock::new(HashMap::new()),
             edges: RwLock::new(Vec::new()),
             edge_index: RwLock::new(HashSet::new()),
+            edge_out_index: RwLock::new(HashMap::new()),
             signals: RwLock::new(SignalEngine::new(SignalRegistry::default_mvp())),
             error_window_ms: 5 * 60 * 1000, // 5分钟
             cleanup_interval_ms: DEFAULT_CLEANUP_INTERVAL_MS,
@@ -201,6 +209,7 @@ impl StateGraph {
         let mut nodes = self.nodes.write().await;
         let mut edges = self.edges.write().await;
         let mut edge_index = self.edge_index.write().await;
+        let mut edge_out_index = self.edge_out_index.write().await;
 
         // 确保资源节点存在（应用命名空间）
         let resource_id = self.namespace_node_id(event, &event.entity_id);
@@ -244,6 +253,7 @@ impl StateGraph {
             upsert_edge(
                 &mut edges,
                 &mut edge_index,
+                &mut edge_out_index,
                 Edge {
                     edge_type: EdgeType::Consumes,
                     from: pid_str,
@@ -261,6 +271,7 @@ impl StateGraph {
         let mut nodes = self.nodes.write().await;
         let mut edges = self.edges.write().await;
         let mut edge_index = self.edge_index.write().await;
+        let mut edge_out_index = self.edge_out_index.write().await;
 
         // 确保资源节点存在
         // 对于 transport.drop 事件，entity_id 格式可能是 "network-pid-<PID>" 或 "eth0" 等
@@ -338,6 +349,7 @@ impl StateGraph {
                 let inserted = upsert_edge(
                     &mut edges,
                     &mut edge_index,
+                    &mut edge_out_index,
                     Edge {
                         edge_type: EdgeType::WaitsOn,
                         from: pid_str.clone(),
@@ -380,6 +392,7 @@ impl StateGraph {
                     upsert_edge(
                         &mut edges,
                         &mut edge_index,
+                        &mut edge_out_index,
                         Edge {
                             edge_type: EdgeType::WaitsOn,
                             from: pid_str,
@@ -405,6 +418,7 @@ impl StateGraph {
         let mut nodes = self.nodes.write().await;
         let mut edges = self.edges.write().await;
         let mut edge_index = self.edge_index.write().await;
+        let mut edge_out_index = self.edge_out_index.write().await;
 
         let error_id_base = format!("error-{}", event.entity_id);
         let error_id = self.namespace_node_id(event, &error_id_base);
@@ -441,6 +455,7 @@ impl StateGraph {
             upsert_edge(
                 &mut edges,
                 &mut edge_index,
+                &mut edge_out_index,
                 Edge {
                     edge_type: EdgeType::BlockedBy,
                     from: pid_str,
@@ -464,6 +479,7 @@ impl StateGraph {
         let mut nodes = self.nodes.write().await;
         let mut edges = self.edges.write().await;
         let mut edge_index = self.edge_index.write().await;
+        let mut edge_out_index = self.edge_out_index.write().await;
 
         let cutoff_ts = current_ts.saturating_sub(self.error_window_ms);
 
@@ -521,7 +537,7 @@ impl StateGraph {
             edges.sort_by_key(|e| std::cmp::Reverse(e.ts));
             edges.truncate(MAX_EDGES);
         }
-        rebuild_edge_index(&edges, &mut edge_index);
+        rebuild_indexes(&edges, &mut edge_index, &mut edge_out_index);
 
         // 注意：资源节点（Resource）不会被清理，即使长时间没有更新
         // 因为资源可能处于稳态（如 GPU 利用率保持 100%），需要探针发送心跳事件来维持
@@ -565,12 +581,17 @@ impl StateGraph {
     /// 获取进程消耗的资源
     pub async fn get_process_resources(&self, pid: u32) -> Vec<String> {
         let pid_str = format!("pid-{}", pid);
-        let edges = self.edges.read().await;
-        edges
-            .iter()
-            .filter(|e| e.edge_type == EdgeType::Consumes && e.from == pid_str)
-            .map(|e| e.to.clone())
-            .collect()
+        let edge_out_index = self.edge_out_index.read().await;
+        edge_out_index
+            .get(&pid_str)
+            .map(|edges| {
+                edges
+                    .iter()
+                    .filter(|e| e.edge_type == EdgeType::Consumes)
+                    .map(|e| e.to.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// 逆向深度优先搜索：查找进程阻塞的根因（通过 PID）
@@ -582,12 +603,12 @@ impl StateGraph {
     /// 逆向深度优先搜索：查找进程阻塞的根因（通过完整节点 ID，支持命名空间）
     /// 这是集群模式下的标准方法，可以直接处理 "node-a::pid-1234" 格式的节点 ID
     pub async fn find_root_cause_by_id(&self, node_id: &str) -> Vec<String> {
-        let edges = self.edges.read().await;
+        let edge_out_index = self.edge_out_index.read().await;
         let nodes = self.nodes.read().await;
         let mut visited = HashSet::new();
         let mut causes = Vec::new();
 
-        self.dfs_backward(node_id, &edges, &nodes, &mut visited, &mut causes);
+        self.dfs_backward(node_id, &edge_out_index, &nodes, &mut visited, &mut causes);
 
         causes
     }
@@ -595,7 +616,7 @@ impl StateGraph {
     fn dfs_backward(
         &self,
         node_id: &str,
-        edges: &[Edge],
+        edge_out_index: &HashMap<String, Vec<IndexedEdge>>,
         nodes: &HashMap<String, Node>,
         visited: &mut HashSet<String>,
         causes: &mut Vec<String>,
@@ -605,30 +626,26 @@ impl StateGraph {
         }
         visited.insert(node_id.to_string());
 
-        // 查找指向当前节点的 BlockedBy 边
-        for edge in edges.iter() {
-            if edge.edge_type == EdgeType::BlockedBy && edge.from == node_id {
-                if let Some(node) = nodes.get(&edge.to) {
-                    if node.node_type == NodeType::Error {
-                        let error_desc = format!(
-                            "{}: {}",
-                            edge.to,
-                            node.metadata
-                                .get("error_type")
-                                .unwrap_or(&"未知错误".to_string())
-                        );
-                        causes.push(error_desc);
+        if let Some(out_edges) = edge_out_index.get(node_id) {
+            for edge in out_edges {
+                if edge.edge_type == EdgeType::BlockedBy {
+                    if let Some(node) = nodes.get(&edge.to) {
+                        if node.node_type == NodeType::Error {
+                            let error_desc = format!(
+                                "{}: {}",
+                                edge.to,
+                                node.metadata
+                                    .get("error_type")
+                                    .unwrap_or(&"未知错误".to_string())
+                            );
+                            causes.push(error_desc);
+                        }
+                        // 继续递归查找
+                        self.dfs_backward(&edge.to, edge_out_index, nodes, visited, causes);
                     }
-                    // 继续递归查找
-                    self.dfs_backward(&edge.to, edges, nodes, visited, causes);
+                } else if edge.edge_type == EdgeType::WaitsOn {
+                    causes.push(format!("等待资源: {}", edge.to));
                 }
-            }
-        }
-
-        // 查找 WaitsOn 边
-        for edge in edges.iter() {
-            if edge.edge_type == EdgeType::WaitsOn && edge.from == node_id {
-                causes.push(format!("等待资源: {}", edge.to));
             }
         }
     }
@@ -658,9 +675,21 @@ fn edge_key(edge: &Edge) -> EdgeKey {
     }
 }
 
-fn upsert_edge(edges: &mut Vec<Edge>, edge_index: &mut HashSet<EdgeKey>, edge: Edge) -> bool {
+fn upsert_edge(
+    edges: &mut Vec<Edge>,
+    edge_index: &mut HashSet<EdgeKey>,
+    edge_out_index: &mut HashMap<String, Vec<IndexedEdge>>,
+    edge: Edge,
+) -> bool {
     let key = edge_key(&edge);
     if edge_index.insert(key) {
+        edge_out_index
+            .entry(edge.from.clone())
+            .or_default()
+            .push(IndexedEdge {
+                edge_type: edge.edge_type.clone(),
+                to: edge.to.clone(),
+            });
         edges.push(edge);
         true
     } else {
@@ -668,10 +697,22 @@ fn upsert_edge(edges: &mut Vec<Edge>, edge_index: &mut HashSet<EdgeKey>, edge: E
     }
 }
 
-fn rebuild_edge_index(edges: &[Edge], edge_index: &mut HashSet<EdgeKey>) {
+fn rebuild_indexes(
+    edges: &[Edge],
+    edge_index: &mut HashSet<EdgeKey>,
+    edge_out_index: &mut HashMap<String, Vec<IndexedEdge>>,
+) {
     edge_index.clear();
+    edge_out_index.clear();
     for edge in edges {
         edge_index.insert(edge_key(edge));
+        edge_out_index
+            .entry(edge.from.clone())
+            .or_default()
+            .push(IndexedEdge {
+                edge_type: edge.edge_type.clone(),
+                to: edge.to.clone(),
+            });
     }
 }
 
