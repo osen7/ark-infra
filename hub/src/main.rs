@@ -10,7 +10,8 @@ use clap::Parser;
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,6 +29,7 @@ use metrics::HubMetricsCollector;
 const DEFAULT_RULES_DIR: &str = "rules";
 const DEFAULT_EVENT_BUFFER_SIZE: usize = 20_000;
 const DEFAULT_WAL_PATH: &str = "tmp/hub-events.wal.jsonl";
+const DEFAULT_DEDUP_WINDOW_S: u64 = 300;
 
 struct WalState {
     file: File,
@@ -36,6 +38,7 @@ struct WalState {
 }
 
 type WalWriter = Arc<Mutex<WalState>>;
+type DedupStore = Arc<Mutex<HashMap<u64, u64>>>;
 
 #[derive(Parser)]
 #[command(name = "ark-hub")]
@@ -65,6 +68,9 @@ struct Cli {
     /// 允许 /api/v1/diagnose?execute=true 真正执行动作（默认关闭，仅 dry-run）
     #[arg(long, default_value_t = false)]
     allow_execute: bool,
+    /// 事件去重窗口（秒），用于抑制补发/回放重复事件
+    #[arg(long, default_value_t = DEFAULT_DEDUP_WINDOW_S)]
+    dedup_window_s: u64,
 }
 
 #[tokio::main]
@@ -99,6 +105,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let event_buffer = Arc::new(RwLock::new(VecDeque::with_capacity(cli.event_buffer_size)));
     let event_buffer_size = cli.event_buffer_size;
     let wal_path = cli.wal_path.clone();
+    let dedup_window_ms = cli.dedup_window_s.saturating_mul(1000);
+    let dedup_store: DedupStore = Arc::new(Mutex::new(HashMap::new()));
 
     // 启动时回放历史 WAL，恢复内存状态图与窗口缓存
     let replayed = replay_wal(
@@ -106,6 +114,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&global_graph),
         Arc::clone(&event_buffer),
         event_buffer_size,
+        Arc::clone(&dedup_store),
+        dedup_window_ms,
     )
     .await?;
     if replayed > 0 {
@@ -146,6 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let metrics = Arc::clone(&metrics);
         let event_buffer = Arc::clone(&event_buffer);
         let wal_writer = wal_writer.clone();
+        let dedup_store = Arc::clone(&dedup_store);
         tokio::spawn(async move {
             let listener = TcpListener::bind(&ws_listen).await?;
             println!("✅ WebSocket 服务器已启动，等待节点连接...");
@@ -157,6 +168,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let metrics = Arc::clone(&metrics);
                 let event_buffer = Arc::clone(&event_buffer);
                 let wal_writer = wal_writer.clone();
+                let dedup_store = Arc::clone(&dedup_store);
                 tokio::spawn(async move {
                     if let Err(e) = handle_connection(
                         stream,
@@ -168,6 +180,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         event_buffer,
                         event_buffer_size,
                         wal_writer,
+                        dedup_store,
+                        dedup_window_ms,
                     )
                     .await
                     {
@@ -271,6 +285,8 @@ async fn replay_wal(
     graph: Arc<StateGraph>,
     event_buffer: Arc<RwLock<VecDeque<Event>>>,
     event_buffer_size: usize,
+    dedup_store: DedupStore,
+    dedup_window_ms: u64,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     if !Path::new(path).exists() {
         return Ok(0);
@@ -292,6 +308,10 @@ async fn replay_wal(
                 continue;
             }
         };
+
+        if !accept_event_with_dedup(&event, &dedup_store, dedup_window_ms).await {
+            continue;
+        }
 
         if let Err(e) = graph.process_event(&event).await {
             eprintln!("[hub] 回放事件失败: {}", e);
@@ -354,6 +374,30 @@ async fn rotate_wal(state: &mut WalState) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+async fn accept_event_with_dedup(event: &Event, dedup_store: &DedupStore, window_ms: u64) -> bool {
+    let key = event_fingerprint(event);
+    let mut store = dedup_store.lock().await;
+    let cutoff = event.ts.saturating_sub(window_ms);
+    store.retain(|_, ts| *ts >= cutoff);
+    if store.contains_key(&key) {
+        return false;
+    }
+    store.insert(key, event.ts);
+    true
+}
+
+fn event_fingerprint(event: &Event) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    event.ts.hash(&mut hasher);
+    event.event_type.to_string().hash(&mut hasher);
+    event.entity_id.hash(&mut hasher);
+    event.job_id.hash(&mut hasher);
+    event.pid.hash(&mut hasher);
+    event.value.hash(&mut hasher);
+    event.node_id.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// 处理单个 WebSocket 连接
 #[allow(clippy::too_many_arguments)]
 async fn handle_connection(
@@ -366,6 +410,8 @@ async fn handle_connection(
     event_buffer: Arc<RwLock<VecDeque<Event>>>,
     event_buffer_size: usize,
     wal_writer: Option<WalWriter>,
+    dedup_store: DedupStore,
+    dedup_window_ms: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("[hub] 新节点连接: {}", addr);
 
@@ -411,6 +457,10 @@ async fn handle_connection(
                         } else {
                             // 事件中没有 node_id，使用默认值
                             event.node_id = Some(node_id.clone());
+                        }
+
+                        if !accept_event_with_dedup(&event, &dedup_store, dedup_window_ms).await {
+                            continue;
                         }
 
                         // 更新全局图
