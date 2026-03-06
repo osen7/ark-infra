@@ -476,50 +476,55 @@ impl StateGraph {
 
     /// 清理过期的错误节点和边（只保留近 error_window_ms 的错误）
     async fn cleanup_old_errors(&self, current_ts: u64) {
+        let cutoff_ts = current_ts.saturating_sub(self.error_window_ms);
+        let process_cutoff = current_ts.saturating_sub(10 * 60 * 1000);
+        let edge_cutoff = current_ts.saturating_sub(EDGE_TTL_MS);
+
+        // 先在读锁下计算清理集合，缩短后续写锁持有时间。
+        let (error_ids, dead_pids): (HashSet<String>, HashSet<String>) = {
+            let nodes = self.nodes.read().await;
+
+            let error_ids = nodes
+                .iter()
+                .filter(|(_, node)| {
+                    node.node_type == NodeType::Error && node.last_update < cutoff_ts
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+
+            let dead_pids = nodes
+                .iter()
+                .filter(|(_, node)| {
+                    if node.node_type != NodeType::Process {
+                        return false;
+                    }
+
+                    // 只清理明确退出的进程，或者长时间未更新且状态不是 running 的进程
+                    let state = node.metadata.get("state").map(String::as_str);
+                    let is_explicitly_dead = matches!(state, Some("exit" | "zombie"));
+                    let is_stale_non_running =
+                        node.last_update < process_cutoff && state != Some("running");
+
+                    is_explicitly_dead || is_stale_non_running
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+
+            (error_ids, dead_pids)
+        };
+
         let mut nodes = self.nodes.write().await;
         let mut edges = self.edges.write().await;
         let mut edge_index = self.edge_index.write().await;
         let mut edge_out_index = self.edge_out_index.write().await;
 
-        let cutoff_ts = current_ts.saturating_sub(self.error_window_ms);
-
         // 移除过期的错误节点
-        let error_ids: Vec<String> = nodes
-            .iter()
-            .filter(|(_, node)| node.node_type == NodeType::Error && node.last_update < cutoff_ts)
-            .map(|(id, _)| id.clone())
-            .collect();
-
         for error_id in &error_ids {
             nodes.remove(error_id);
         }
 
         // 移除相关的 BlockedBy 边
         edges.retain(|e| !(e.edge_type == EdgeType::BlockedBy && error_ids.contains(&e.to)));
-
-        // 清理非活跃进程（超过10分钟未更新）
-        // 重要：只清理明确标记为 exit/zombie 的进程，不清理稳态运行的进程
-        // 即使长时间没有事件更新，只要状态是 running，就保留（可能是稳态工作负载）
-        let process_cutoff = current_ts.saturating_sub(10 * 60 * 1000);
-        let dead_pids: Vec<String> = nodes
-            .iter()
-            .filter(|(_, node)| {
-                if node.node_type != NodeType::Process {
-                    return false;
-                }
-
-                // 只清理明确退出的进程，或者长时间未更新且状态不是 running 的进程
-                let state = node.metadata.get("state");
-                let is_explicitly_dead =
-                    state == Some(&"exit".to_string()) || state == Some(&"zombie".to_string());
-
-                let is_stale_non_running =
-                    node.last_update < process_cutoff && state != Some(&"running".to_string());
-
-                is_explicitly_dead || is_stale_non_running
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
 
         for pid in &dead_pids {
             nodes.remove(pid);
@@ -529,7 +534,6 @@ impl StateGraph {
         edges.retain(|e| !dead_pids.contains(&e.from) && !dead_pids.contains(&e.to));
 
         // 全局 TTL 清理，避免边无界增长
-        let edge_cutoff = current_ts.saturating_sub(EDGE_TTL_MS);
         edges.retain(|e| e.ts >= edge_cutoff);
 
         // 容量保护，保留最新边防止异常流量导致 OOM
