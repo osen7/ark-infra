@@ -4,8 +4,6 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-#[cfg(windows)]
-use tokio::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 
@@ -66,19 +64,11 @@ pub fn default_socket_path() -> PathBuf {
     }
 }
 
-#[cfg(windows)]
-pub fn default_socket_path() -> PathBuf {
-    // Windows 不支持 UDS，返回空路径（将使用 TCP）
-    PathBuf::new()
-}
-
 /// IPC 服务器：提供对 StateGraph 的远程查询接口
 pub struct IpcServer {
     graph: Arc<StateGraph>,
     #[cfg(unix)]
     socket_path: PathBuf,
-    #[cfg(windows)]
-    port: u16,
 }
 
 impl IpcServer {
@@ -88,11 +78,6 @@ impl IpcServer {
             graph,
             socket_path: socket_path.unwrap_or_else(default_socket_path),
         }
-    }
-
-    #[cfg(windows)]
-    pub fn new(graph: Arc<StateGraph>, port: u16) -> Self {
-        Self { graph, port }
     }
 
     /// 启动 IPC 服务器（阻塞运行）
@@ -141,39 +126,10 @@ impl IpcServer {
         }
     }
 
-    #[cfg(windows)]
-    pub async fn serve(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let addr = format!("127.0.0.1:{}", self.port);
-        let listener = TcpListener::bind(&addr).await?;
-
-        println!("[ark] IPC 服务器已启动，监听 TCP: {}", addr);
-
-        loop {
-            match listener.accept().await {
-                Ok((stream, addr)) => {
-                    let graph = Arc::clone(&self.graph);
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_client_tcp(stream, graph).await {
-                            eprintln!("[ark] 处理客户端 {} 请求失败: {}", addr, e);
-                        }
-                    });
-                }
-                Err(e) => {
-                    eprintln!("[ark] 接受连接失败: {}", e);
-                }
-            }
-        }
-    }
-
-    /// 获取 Socket 路径（Unix）或端口（Windows）
+    /// 获取 Socket 路径
     #[cfg(unix)]
     pub fn socket_path(&self) -> &PathBuf {
         &self.socket_path
-    }
-
-    #[cfg(windows)]
-    pub fn port(&self) -> u16 {
-        self.port
     }
 }
 
@@ -225,61 +181,6 @@ async fn handle_client_unix(
 
         // 发送响应
         send_response_unix(&mut stream, &response).await?;
-    }
-
-    Ok(())
-}
-
-/// 处理单个客户端连接（TCP Socket，Windows）
-#[cfg(windows)]
-async fn handle_client_tcp(
-    mut stream: TcpStream,
-    graph: Arc<StateGraph>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut buf = vec![0u8; 4096];
-
-    // 最大请求体大小：10MB（防止 OOM 攻击）
-    const MAX_REQUEST_SIZE: u32 = 10 * 1024 * 1024;
-
-    loop {
-        // 读取请求长度（4字节）
-        let n = stream.read_u32().await?;
-        if n == 0 {
-            break; // 客户端关闭连接
-        }
-
-        // 安全检查：防止恶意客户端发送超大请求导致 OOM
-        if n > MAX_REQUEST_SIZE {
-            let response = RpcResponse::error(format!(
-                "请求体过大: {} 字节（最大允许: {} 字节）",
-                n, MAX_REQUEST_SIZE
-            ));
-            send_response_tcp(&mut stream, &response).await?;
-            continue;
-        }
-
-        // 读取请求体
-        let mut request_buf = vec![0u8; n as usize];
-        stream.read_exact(&mut request_buf).await?;
-
-        // 解析 JSON 请求
-        let request: RpcRequest = match serde_json::from_slice(&request_buf) {
-            Ok(req) => req,
-            Err(e) => {
-                let response = RpcResponse::error(format!("解析请求失败: {}", e));
-                send_response_tcp(&mut stream, &response).await?;
-                continue;
-            }
-        };
-
-        // 处理请求
-        let response = match handle_request(request, Arc::clone(&graph)).await {
-            Ok(data) => RpcResponse::success(data),
-            Err(e) => RpcResponse::error(e),
-        };
-
-        // 发送响应
-        send_response_tcp(&mut stream, &response).await?;
     }
 
     Ok(())
@@ -347,30 +248,10 @@ async fn send_response_unix(
     Ok(())
 }
 
-/// 发送响应到客户端（TCP Socket）
-#[cfg(windows)]
-async fn send_response_tcp(
-    stream: &mut TcpStream,
-    response: &RpcResponse,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let response_json = serde_json::to_vec(response)?;
-    let len = response_json.len() as u32;
-
-    // 先发送长度（4字节）
-    stream.write_u32(len).await?;
-    // 再发送响应体
-    stream.write_all(&response_json).await?;
-    stream.flush().await?;
-
-    Ok(())
-}
-
 /// IPC 客户端：用于 CLI 命令查询 daemon 状态
 pub struct IpcClient {
     #[cfg(unix)]
     socket_path: PathBuf,
-    #[cfg(windows)]
-    port: u16,
 }
 
 impl IpcClient {
@@ -381,25 +262,12 @@ impl IpcClient {
         }
     }
 
-    #[cfg(windows)]
-    pub fn new(port: u16) -> Self {
-        Self { port }
-    }
-
     /// 连接到 daemon
     #[cfg(unix)]
     async fn connect(&self) -> Result<UnixStream, String> {
         UnixStream::connect(&self.socket_path)
             .await
             .map_err(|e| format!("无法连接到 daemon ({}): {}", self.socket_path.display(), e))
-    }
-
-    #[cfg(windows)]
-    async fn connect(&self) -> Result<TcpStream, String> {
-        let addr = format!("127.0.0.1:{}", self.port);
-        TcpStream::connect(&addr)
-            .await
-            .map_err(|e| format!("无法连接到 daemon ({}): {}", addr, e))
     }
 
     /// 发送 RPC 请求并接收响应

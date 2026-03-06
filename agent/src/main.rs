@@ -34,9 +34,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use warp::{Filter, Reply};
 
-#[cfg(windows)]
-const DEFAULT_IPC_PORT: u16 = 9090;
-
 #[derive(Parser)]
 #[command(name = "ark")]
 #[command(about = "极简主义异构 AI 算力集群管控底座", long_about = None)]
@@ -53,10 +50,6 @@ enum Commands {
         /// Unix Domain Socket 路径（默认: /var/run/ark.sock 或 ~/.ark/ark.sock）
         #[arg(long)]
         socket_path: Option<PathBuf>,
-        #[cfg(windows)]
-        /// IPC 服务端口（默认: 9090）
-        #[arg(long, default_value_t = DEFAULT_IPC_PORT)]
-        port: u16,
         /// 探针脚本路径（可选，默认使用内置 dummy_probe）
         #[arg(long)]
         probe: Option<PathBuf>,
@@ -70,10 +63,6 @@ enum Commands {
         /// Unix Domain Socket 路径（默认: /var/run/ark.sock 或 ~/.ark/ark.sock）
         #[arg(long)]
         socket_path: Option<PathBuf>,
-        #[cfg(windows)]
-        /// IPC 服务端口（默认: 9090）
-        #[arg(long, default_value_t = DEFAULT_IPC_PORT)]
-        port: u16,
     },
     /// 分析进程阻塞根因
     Why {
@@ -86,10 +75,6 @@ enum Commands {
         /// Unix Domain Socket 路径（默认: /var/run/ark.sock 或 ~/.ark/ark.sock）
         #[arg(long)]
         socket_path: Option<PathBuf>,
-        #[cfg(windows)]
-        /// IPC 服务端口（默认: 9090）
-        #[arg(long, default_value_t = DEFAULT_IPC_PORT)]
-        port: u16,
     },
     /// 运行环境与连通性自检
     Doctor {
@@ -115,10 +100,6 @@ enum Commands {
         /// Unix Domain Socket 路径（默认: /var/run/ark.sock 或 ~/.ark/ark.sock）
         #[arg(long)]
         socket_path: Option<PathBuf>,
-        #[cfg(windows)]
-        /// IPC 服务端口（默认: 9090）
-        #[arg(long, default_value_t = DEFAULT_IPC_PORT)]
-        port: u16,
     },
     /// 强制终止进程（包括进程树）
     Zap {
@@ -133,10 +114,6 @@ enum Commands {
         /// Unix Domain Socket 路径（默认: /var/run/ark.sock 或 ~/.ark/ark.sock）
         #[arg(long)]
         socket_path: Option<PathBuf>,
-        #[cfg(windows)]
-        /// IPC 服务端口（默认: 9090）
-        #[arg(long, default_value_t = DEFAULT_IPC_PORT)]
-        port: u16,
         /// 大模型提供商（openai/claude/local，默认从环境变量读取）
         #[arg(long)]
         provider: Option<String>,
@@ -155,10 +132,6 @@ enum Commands {
         /// Unix Domain Socket 路径（默认: /var/run/ark.sock 或 ~/.ark/ark.sock）
         #[arg(long)]
         socket_path: Option<PathBuf>,
-        #[cfg(windows)]
-        /// IPC 服务端口（默认: 9090）
-        #[arg(long, default_value_t = DEFAULT_IPC_PORT)]
-        port: u16,
         /// 规则文件目录（默认: ./rules）
         #[arg(long)]
         rules_dir: Option<PathBuf>,
@@ -208,21 +181,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             run_daemon(socket_path, probe, hub_url).await?;
         }
-        #[cfg(windows)]
-        Commands::Run {
-            port,
-            probe,
-            hub_url,
-        } => {
-            run_daemon(port, probe, hub_url).await?;
-        }
         #[cfg(unix)]
         Commands::Ps { socket_path } => {
             query_processes(socket_path).await?;
-        }
-        #[cfg(windows)]
-        Commands::Ps { port } => {
-            query_processes(port).await?;
         }
         #[cfg(unix)]
         Commands::Why {
@@ -231,10 +192,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             socket_path,
         } => {
             query_why(pid, json, socket_path).await?;
-        }
-        #[cfg(windows)]
-        Commands::Why { pid, json, port } => {
-            query_why(pid, json, port).await?;
         }
         #[cfg(unix)]
         Commands::Doctor {
@@ -261,31 +218,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(e.exit_code());
             }
         }
-        #[cfg(windows)]
-        Commands::Doctor {
-            rules_dir,
-            hub,
-            strict,
-            json,
-            check_rules_validate,
-            check_fixtures,
-            port,
-        } => {
-            if let Err(e) = run_doctor(DoctorOptions {
-                rules_dir,
-                hub,
-                strict,
-                json,
-                check_rules_validate,
-                check_fixtures,
-                port,
-            })
-            .await
-            {
-                eprintln!("[ark] doctor failed: {}", e);
-                std::process::exit(e.exit_code());
-            }
-        }
         Commands::Zap { pid } => {
             zap_process(pid).await?;
         }
@@ -298,15 +230,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             diagnose_process(pid, socket_path, provider, rules_dir).await?;
         }
-        #[cfg(windows)]
-        Commands::Diag {
-            pid,
-            port,
-            provider,
-            rules_dir,
-        } => {
-            diagnose_process(pid, port, provider, rules_dir).await?;
-        }
         #[cfg(unix)]
         Commands::Fix {
             pid,
@@ -316,16 +239,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             audit_log,
         } => {
             fix_process(pid, socket_path, rules_dir, yes, audit_log).await?;
-        }
-        #[cfg(windows)]
-        Commands::Fix {
-            pid,
-            port,
-            rules_dir,
-            yes,
-            audit_log,
-        } => {
-            fix_process(pid, port, rules_dir, yes, audit_log).await?;
         }
         Commands::Cluster { command, hub } => match command {
             ClusterCommands::Ps => {
@@ -413,12 +326,9 @@ async fn run_daemon(
         let tx = tx.clone();
         tokio::spawn(async move {
             if let Some(ref path) = probe_path {
-                // 使用外部探针脚本
-                // 尝试 python3，如果失败则尝试 python（Windows 兼容）
-                let python_cmd = if cfg!(windows) { "python" } else { "python3" };
-
+                // 使用外部探针脚本（Linux-only）
                 let probe = SubprocessProbe::new(
-                    python_cmd.to_string(),
+                    "python3".to_string(),
                     vec![path.to_string_lossy().to_string()],
                 );
 
@@ -533,123 +443,6 @@ async fn run_daemon(
     Ok(())
 }
 
-#[cfg(windows)]
-async fn run_daemon(
-    port: u16,
-    probe_path: Option<PathBuf>,
-    hub_url: Option<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!("[ark] 启动事件总线...");
-
-    // 创建事件总线
-    let mut bus = EventBus::new(1000);
-    let tx = bus.sender();
-
-    // 创建状态图
-    let graph = Arc::new(StateGraph::new());
-
-    // 启动探针
-    let probe_handle = {
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            if let Some(ref path) = probe_path {
-                let probe = SubprocessProbe::new(
-                    "python".to_string(),
-                    vec![path.to_string_lossy().to_string()],
-                );
-
-                if let Err(e) = probe.start_stream(tx).await {
-                    eprintln!("[ark] 外部探针异常退出: {}", e);
-                }
-            } else {
-                eprintln!("[ark] 警告：使用内置 dummy_probe，建议使用 --probe 指定外部探针脚本");
-                if let Err(e) = ark_core::event::dummy_probe(tx).await {
-                    eprintln!("[ark] 内置探针异常退出: {}", e);
-                }
-            }
-        })
-    };
-
-    // 初始化 Hub 转发器（如果配置了 hub_url）
-    let mut hub_forwarder: Option<HubForwarder> = None;
-    if let Some(ref url) = hub_url {
-        let node_id = get_node_id();
-        let mut forwarder = HubForwarder::new(url.clone(), node_id.clone());
-        if let Err(e) = forwarder.connect().await {
-            eprintln!(
-                "[ark] 警告：无法连接到 Hub {}: {}，将继续运行但不推送事件",
-                url, e
-            );
-        } else {
-            hub_forwarder = Some(forwarder);
-            println!("[ark] Hub 转发器已启动，节点ID: {}", node_id);
-        }
-    }
-
-    // 启动事件消费和图形更新任务（同时推送到 Hub）
-    let graph_handle = {
-        let graph = Arc::clone(&graph);
-        let hub_forwarder = hub_forwarder.map(|f| Arc::new(tokio::sync::RwLock::new(f)));
-        let mut rx = bus
-            .receiver()
-            .ok_or_else(|| std::io::Error::other("event receiver already taken"))?;
-        tokio::spawn(async move {
-            loop {
-                match rx.recv().await {
-                    Some(event) => {
-                        // 更新本地图
-                        if let Err(e) = graph.process_event(&event).await {
-                            eprintln!("[ark] 处理事件失败: {}", e);
-                        }
-
-                        // 推送到 Hub（如果配置了且事件需要推送）
-                        if let Some(ref forwarder_arc) = hub_forwarder {
-                            let mut forwarder = forwarder_arc.write().await;
-                            if forwarder.should_forward(&event).await {
-                                if let Err(e) =
-                                    forwarder.forward_event_with_retry(event.clone()).await
-                                {
-                                    eprintln!("[ark] 推送事件到 Hub 失败(含重试): {}", e);
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        eprintln!("[ark] 事件通道已关闭");
-                        break;
-                    }
-                }
-            }
-        })
-    };
-
-    // 启动 IPC 服务器（在后台任务中运行）
-    let ipc_handle = {
-        let graph = Arc::clone(&graph);
-        tokio::spawn(async move {
-            let server = IpcServer::new(graph, port);
-            if let Err(e) = server.serve().await {
-                eprintln!("[ark] IPC 服务器异常退出: {}", e);
-            }
-        })
-    };
-
-    println!("[ark] 探针已启动，状态图已初始化");
-    println!("[ark] IPC 服务器已启动，监听端口 {}", port);
-    println!("[ark] 按 Ctrl+C 退出\n");
-
-    // 等待退出信号
-    tokio::signal::ctrl_c().await?;
-    println!("\n[ark] 收到退出信号，正在关闭...");
-
-    probe_handle.abort();
-    graph_handle.abort();
-    ipc_handle.abort();
-
-    println!("[ark] 退出完成");
-    Ok(())
-}
-
 /// 查询进程列表（通过 IPC）
 #[cfg(unix)]
 async fn query_processes(socket_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
@@ -658,70 +451,6 @@ async fn query_processes(socket_path: Option<PathBuf>) -> Result<(), Box<dyn std
     // 检查 daemon 是否运行
     if !client.ping().await? {
         eprintln!("[ark] 错误：无法连接到 daemon");
-        eprintln!("[ark] 请先运行: ark run");
-        return Err("daemon 未运行".into());
-    }
-
-    // 查询进程列表
-    let processes = client.list_processes().await?;
-
-    if processes.is_empty() {
-        println!("没有活跃进程");
-        return Ok(());
-    }
-
-    // 打印表头
-    use colored::*;
-    println!(
-        "{:>8} | {:>12} | {:>20} | {}",
-        "PID".bright_cyan(),
-        "JOB_ID".bright_cyan(),
-        "RESOURCES".bright_cyan(),
-        "STATE".bright_cyan()
-    );
-    println!("{}", "-".repeat(80));
-
-    // 打印每个进程
-    for proc in processes {
-        let pid = proc["pid"].as_u64().unwrap_or(0) as u32;
-        let job_id = proc["job_id"].as_str().unwrap_or("-").to_string();
-        let state = proc["state"].as_str().unwrap_or("unknown").to_string();
-
-        // 从 IPC 响应中获取资源列表
-        let resources: Vec<String> = proc["resources"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let resources_str = if resources.is_empty() {
-            "-".to_string()
-        } else {
-            resources.join(", ")
-        };
-
-        println!(
-            "{:>8} | {:>12} | {:>20} | {}",
-            pid.to_string().bright_green(),
-            job_id.bright_yellow(),
-            resources_str.bright_white(),
-            state.bright_blue()
-        );
-    }
-
-    Ok(())
-}
-
-#[cfg(windows)]
-async fn query_processes(port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    let client = IpcClient::new(port);
-
-    // 检查 daemon 是否运行
-    if !client.ping().await? {
-        eprintln!("[ark] 错误：无法连接到 daemon (端口 {})", port);
         eprintln!("[ark] 请先运行: ark run");
         return Err("daemon 未运行".into());
     }
@@ -843,52 +572,6 @@ async fn zap_process(pid: u32) -> Result<(), Box<dyn std::error::Error>> {
             return Err(std::io::Error::other(e).into());
         }
     }
-
-    Ok(())
-}
-
-#[cfg(windows)]
-async fn query_why(
-    pid: u32,
-    json_output: bool,
-    port: u16,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::ipc::IpcClient;
-    use colored::*;
-
-    let client = IpcClient::new(port);
-    let node_id = get_node_id();
-    let agent_id = std::env::var("ARK_AGENT_ID").unwrap_or_else(|_| node_id.clone());
-
-    // 检查 daemon 是否运行
-    if !client.ping().await? {
-        if json_output {
-            let report = build_why_error_report(
-                pid,
-                &node_id,
-                &agent_id,
-                "DAEMON_UNREACHABLE",
-                "ark daemon is not reachable",
-                Some("start daemon with `ark run`"),
-            );
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        }
-        eprintln!("[ark] 错误：无法连接到 daemon (端口 {})", port);
-        eprintln!("[ark] 请先运行: ark run");
-        return Err("daemon 未运行".into());
-    }
-
-    // 查询根因
-    let causes = client.why_process(pid).await?;
-
-    let report = build_why_report(pid, &causes, node_id, agent_id);
-
-    if json_output {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
-    }
-
-    print_why_report(&report, pid.to_string().bright_green().as_ref());
 
     Ok(())
 }
@@ -1302,91 +985,6 @@ async fn fix_process(
             println!("  ❌ {}: {}", action.action, action.error);
         }
     }
-
-    Ok(())
-}
-
-#[cfg(windows)]
-async fn fix_process(
-    pid: u32,
-    port: u16,
-    _rules_dir: Option<PathBuf>,
-    _auto_yes: bool,
-    audit_log: Option<PathBuf>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use colored::Colorize;
-
-    println!("[ark] 正在修复进程 {}...", pid.to_string().bright_green());
-
-    // 连接到 daemon
-    let client = IpcClient::new(port);
-    if !client.ping().await? {
-        return Err("无法连接到 daemon，请先运行: ark run".into());
-    }
-
-    // 获取根因分析
-    let causes = client.why_process(pid).await?;
-
-    // 识别场景
-    let scene = identify_scene_from_causes(&causes);
-
-    if scene.is_none() {
-        println!("{}", "[ark] 未识别到问题场景，无法自动修复".bright_yellow());
-        return Ok(());
-    }
-
-    let scene = scene.unwrap();
-
-    // 创建分析结果
-    let analysis = create_analysis_from_causes(scene, &causes);
-
-    // 初始化审计日志（如果指定了路径）
-    let audit_logger = if let Some(ref log_path) = audit_log {
-        Some(Arc::new(audit::AuditLogger::new(log_path.clone(), 100)?)) // 100MB 最大大小
-    } else {
-        None
-    };
-
-    // 执行修复
-    let fix_engine = FixEngine::new();
-    let result = fix_engine.fix_from_analysis(&analysis, pid).await?;
-
-    // 记录审计日志
-    if let Some(ref logger) = audit_logger {
-        let action_str = if !result.executed_actions.is_empty() {
-            result.executed_actions[0].action.clone()
-        } else if !analysis.recommended_actions.is_empty() {
-            analysis.recommended_actions[0].clone()
-        } else {
-            "Unknown".to_string()
-        };
-
-        let details = format!(
-            "执行动作: {}; 成功: {}; 失败: {}; 场景: {:?}",
-            action_str,
-            result.executed_actions.len(),
-            result.failed_actions.len(),
-            analysis.scene
-        );
-
-        let entry = audit::create_audit_entry(
-            &action_str,
-            pid,
-            None, // job_id 暂时为 None
-            if result.success {
-                "success"
-            } else {
-                "partial_failure"
-            },
-            &details,
-        );
-
-        if let Err(e) = logger.log(entry).await {
-            eprintln!("[audit] 记录审计日志失败: {}", e);
-        }
-    }
-
-    println!("修复结果: {}", result.message);
 
     Ok(())
 }

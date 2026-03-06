@@ -52,10 +52,7 @@ pub struct DoctorOptions {
     pub json: bool,
     pub check_rules_validate: bool,
     pub check_fixtures: bool,
-    #[cfg(unix)]
     pub socket_path: Option<PathBuf>,
-    #[cfg(windows)]
-    pub port: u16,
 }
 
 #[derive(Debug)]
@@ -98,16 +95,7 @@ pub async fn run_doctor(opts: DoctorOptions) -> Result<(), DoctorError> {
     let environment = detect_runtime_environment();
     let mut sections = Vec::new();
     sections.push(environment_checks(&environment).await);
-    sections.push(
-        ark_runtime_checks(
-            &opts,
-            #[cfg(unix)]
-            opts.socket_path.clone(),
-            #[cfg(windows)]
-            opts.port,
-        )
-        .await,
-    );
+    sections.push(ark_runtime_checks(&opts, opts.socket_path.clone()).await);
     sections.push(hub_connectivity_checks(&opts).await);
 
     let summary = summarize(&sections);
@@ -169,11 +157,7 @@ async fn environment_checks(environment: &str) -> DoctorSection {
     }
 }
 
-async fn ark_runtime_checks(
-    opts: &DoctorOptions,
-    #[cfg(unix)] socket_path: Option<PathBuf>,
-    #[cfg(windows)] port: u16,
-) -> DoctorSection {
+async fn ark_runtime_checks(opts: &DoctorOptions, socket_path: Option<PathBuf>) -> DoctorSection {
     let mut checks = Vec::new();
     checks.push(check_rules_load(&opts.rules_dir));
     if opts.check_rules_validate {
@@ -182,15 +166,7 @@ async fn ark_runtime_checks(
     if opts.check_fixtures {
         checks.push(check_fixtures_contract(&opts.rules_dir));
     }
-    checks.push(
-        check_daemon_connectivity(
-            #[cfg(unix)]
-            socket_path,
-            #[cfg(windows)]
-            port,
-        )
-        .await,
-    );
+    checks.push(check_daemon_connectivity(socket_path).await);
 
     DoctorSection {
         name: "Ark Runtime".to_string(),
@@ -966,16 +942,8 @@ fn get_yaml_u64(map: &serde_yaml::Mapping, key: &str) -> Option<u64> {
         .and_then(|v| v.as_u64())
 }
 
-async fn check_daemon_connectivity(
-    #[cfg(unix)] socket_path: Option<PathBuf>,
-    #[cfg(windows)] port: u16,
-) -> CheckItem {
-    let client = IpcClient::new(
-        #[cfg(unix)]
-        socket_path,
-        #[cfg(windows)]
-        port,
-    );
+async fn check_daemon_connectivity(socket_path: Option<PathBuf>) -> CheckItem {
+    let client = IpcClient::new(socket_path);
     match client.ping().await {
         Ok(true) => CheckItem {
             name: "daemon connectivity".to_string(),

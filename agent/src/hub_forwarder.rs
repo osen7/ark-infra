@@ -311,9 +311,7 @@ pub fn get_node_id() -> String {
     }
 
     // 回退到环境变量
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| "unknown-node".to_string())
+    std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown-node".to_string())
 }
 
 #[cfg(test)]

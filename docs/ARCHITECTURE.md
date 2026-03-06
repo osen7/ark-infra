@@ -224,7 +224,6 @@ actions:
 
 **职责**:
 - Unix Domain Socket 服务器（Linux）
-- TCP Socket 服务器（Windows）
 - 处理 CLI 请求
 
 **协议**:

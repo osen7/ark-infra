@@ -49,29 +49,21 @@ impl ActionExecutor {
 
     /// 发送信号
     async fn send_signal(&self, signal: i32, pid: u32) -> Result<String, String> {
-        #[cfg(unix)]
-        {
-            let output = Command::new("kill")
-                .arg(format!("-{}", signal))
-                .arg(pid.to_string())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .await
-                .map_err(|e| format!("执行 kill 失败: {}", e))?;
+        let output = Command::new("kill")
+            .arg(format!("-{}", signal))
+            .arg(pid.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| format!("执行 kill 失败: {}", e))?;
 
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("发送信号失败: {}", stderr));
-            }
-
-            Ok(format!("成功发送信号 {} 到进程 {}", signal, pid))
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("发送信号失败: {}", stderr));
         }
 
-        #[cfg(windows)]
-        {
-            Err("Windows 不支持信号发送".to_string())
-        }
+        Ok(format!("成功发送信号 {} 到进程 {}", signal, pid))
     }
 
     /// 应用 Cgroup 限流
@@ -82,104 +74,88 @@ impl ActionExecutor {
         memory_limit: Option<u64>,
         _io_limit: Option<u64>,
     ) -> Result<String, String> {
-        #[cfg(unix)]
-        {
-            // 创建临时 cgroup
-            let cgroup_name = format!("ark-{}", pid);
-            let cgroup_path = format!("/sys/fs/cgroup/ark/{}", cgroup_name);
+        // 创建临时 cgroup
+        let cgroup_name = format!("ark-{}", pid);
+        let cgroup_path = format!("/sys/fs/cgroup/ark/{}", cgroup_name);
 
-            // 创建 cgroup 目录
-            let _ = Command::new("mkdir")
-                .arg("-p")
-                .arg(&cgroup_path)
-                .output()
-                .await;
+        // 创建 cgroup 目录
+        let _ = Command::new("mkdir")
+            .arg("-p")
+            .arg(&cgroup_path)
+            .output()
+            .await;
 
-            let mut results = Vec::new();
+        let mut results = Vec::new();
 
-            // 设置 CPU 限制
-            if let Some(quota) = cpu_quota {
-                let cpu_quota_file = format!("{}/cpu.cfs_quota_us", cgroup_path);
-                if let Err(e) = tokio::fs::write(&cpu_quota_file, quota.to_string()).await {
-                    results.push(format!("CPU 限流失败: {}", e));
-                } else {
-                    results.push(format!("CPU 限流: {}%", quota / 1000));
-                }
+        // 设置 CPU 限制
+        if let Some(quota) = cpu_quota {
+            let cpu_quota_file = format!("{}/cpu.cfs_quota_us", cgroup_path);
+            if let Err(e) = tokio::fs::write(&cpu_quota_file, quota.to_string()).await {
+                results.push(format!("CPU 限流失败: {}", e));
+            } else {
+                results.push(format!("CPU 限流: {}%", quota / 1000));
             }
-
-            // 设置内存限制
-            if let Some(limit) = memory_limit {
-                let memory_limit_file = format!("{}/memory.limit_in_bytes", cgroup_path);
-                if let Err(e) = tokio::fs::write(&memory_limit_file, limit.to_string()).await {
-                    results.push(format!("内存限流失败: {}", e));
-                } else {
-                    results.push(format!("内存限流: {}MB", limit / 1024 / 1024));
-                }
-            }
-
-            // 将进程加入 cgroup
-            let tasks_file = format!("{}/tasks", cgroup_path);
-            if let Err(e) = tokio::fs::write(&tasks_file, pid.to_string()).await {
-                return Err(format!("将进程加入 cgroup 失败: {}", e));
-            }
-
-            Ok(format!("Cgroup 限流应用成功: {}", results.join(", ")))
         }
 
-        #[cfg(windows)]
-        {
-            Err("Windows 不支持 Cgroup".to_string())
+        // 设置内存限制
+        if let Some(limit) = memory_limit {
+            let memory_limit_file = format!("{}/memory.limit_in_bytes", cgroup_path);
+            if let Err(e) = tokio::fs::write(&memory_limit_file, limit.to_string()).await {
+                results.push(format!("内存限流失败: {}", e));
+            } else {
+                results.push(format!("内存限流: {}MB", limit / 1024 / 1024));
+            }
         }
+
+        // 将进程加入 cgroup
+        let tasks_file = format!("{}/tasks", cgroup_path);
+        if let Err(e) = tokio::fs::write(&tasks_file, pid.to_string()).await {
+            return Err(format!("将进程加入 cgroup 失败: {}", e));
+        }
+
+        Ok(format!("Cgroup 限流应用成功: {}", results.join(", ")))
     }
 
     /// 重启网络接口
     async fn restart_network_interface(&self, interface: &str) -> Result<String, String> {
-        #[cfg(unix)]
-        {
-            // 先 down
-            let down_output = Command::new("ip")
-                .arg("link")
-                .arg("set")
-                .arg("down")
-                .arg(interface)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .await
-                .map_err(|e| format!("执行 ip link set down 失败: {}", e))?;
+        // 先 down
+        let down_output = Command::new("ip")
+            .arg("link")
+            .arg("set")
+            .arg("down")
+            .arg(interface)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| format!("执行 ip link set down 失败: {}", e))?;
 
-            if !down_output.status.success() {
-                let stderr = String::from_utf8_lossy(&down_output.stderr);
-                return Err(format!("关闭接口失败: {}", stderr));
-            }
-
-            // 等待 1 秒
-            sleep(Duration::from_secs(1)).await;
-
-            // 再 up
-            let up_output = Command::new("ip")
-                .arg("link")
-                .arg("set")
-                .arg("up")
-                .arg(interface)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .await
-                .map_err(|e| format!("执行 ip link set up 失败: {}", e))?;
-
-            if !up_output.status.success() {
-                let stderr = String::from_utf8_lossy(&up_output.stderr);
-                return Err(format!("启动接口失败: {}", stderr));
-            }
-
-            Ok(format!("成功重启网络接口: {}", interface))
+        if !down_output.status.success() {
+            let stderr = String::from_utf8_lossy(&down_output.stderr);
+            return Err(format!("关闭接口失败: {}", stderr));
         }
 
-        #[cfg(windows)]
-        {
-            Err("Windows 网络接口重启需要管理员权限".to_string())
+        // 等待 1 秒
+        sleep(Duration::from_secs(1)).await;
+
+        // 再 up
+        let up_output = Command::new("ip")
+            .arg("link")
+            .arg("set")
+            .arg("up")
+            .arg(interface)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| format!("执行 ip link set up 失败: {}", e))?;
+
+        if !up_output.status.success() {
+            let stderr = String::from_utf8_lossy(&up_output.stderr);
+            return Err(format!("启动接口失败: {}", stderr));
         }
+
+        Ok(format!("成功重启网络接口: {}", interface))
     }
 
     /// 优雅降级
@@ -219,48 +195,24 @@ impl ActionExecutor {
 
     /// 终止进程
     async fn kill_process(&self, pid: u32) -> Result<String, String> {
-        #[cfg(unix)]
-        {
-            let output = Command::new("kill")
-                .arg("-9")
-                .arg(pid.to_string())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .await
-                .map_err(|e| format!("执行 kill 失败: {}", e))?;
+        let output = Command::new("kill")
+            .arg("-9")
+            .arg(pid.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| format!("执行 kill 失败: {}", e))?;
 
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if stderr.contains("No such process") {
-                    return Ok("进程已不存在".to_string());
-                }
-                return Err(format!("kill 失败: {}", stderr));
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("No such process") {
+                return Ok("进程已不存在".to_string());
             }
-
-            Ok(format!("成功终止进程 {}", pid))
+            return Err(format!("kill 失败: {}", stderr));
         }
 
-        #[cfg(windows)]
-        {
-            let output = Command::new("taskkill")
-                .args(&["/F", "/PID", &pid.to_string()])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .await
-                .map_err(|e| format!("执行 taskkill 失败: {}", e))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if stderr.contains("找不到") || stderr.contains("not found") {
-                    return Ok("进程已不存在".to_string());
-                }
-                return Err(format!("taskkill 失败: {}", stderr));
-            }
-
-            Ok(format!("成功终止进程 {}", pid))
-        }
+        Ok(format!("成功终止进程 {}", pid))
     }
 
     /// 隔离节点

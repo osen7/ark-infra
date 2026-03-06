@@ -47,79 +47,46 @@ impl Actuator for SystemActuator {
 impl SystemActuator {
     /// 彻底清理进程树（包括所有子进程）
     async fn kill_process_tree(&self, pid: u32) -> Result<(), String> {
-        // 在 Windows 上，使用 taskkill
-        #[cfg(windows)]
-        {
-            // 使用 taskkill /F /T 强制终止进程树
-            let output = Command::new("taskkill")
-                .args(&["/F", "/T", "/PID", &pid.to_string()])
+        // Linux/Unix: 使用 kill -9 和进程组
+        let pgid_result = self.get_process_group(pid).await;
+
+        if let Ok(pgid) = pgid_result {
+            // 使用 kill 命令终止整个进程组
+            let output = Command::new("kill")
+                .args(["-9", &format!("-{}", pgid)])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .output()
                 .await
-                .map_err(|e| format!("执行 taskkill 失败: {}", e))?;
+                .map_err(|e| format!("执行 kill 失败: {}", e))?;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                // 如果进程不存在，不算错误
-                if stderr.contains("找不到") || stderr.contains("not found") {
+                if stderr.contains("No such process") {
                     return Ok(());
                 }
-                return Err(format!("taskkill 失败: {}", stderr));
+                return Err(format!("kill 失败: {}", stderr));
             }
+        } else {
+            // 如果无法获取进程组，直接 kill 主进程
+            let output = Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+                .map_err(|e| format!("执行 kill 失败: {}", e))?;
 
-            Ok(())
-        }
-
-        // 在 Linux/Unix 上，使用 kill -9 和进程组
-        #[cfg(unix)]
-        {
-            // 首先尝试获取进程组 ID
-            let pgid_result = self.get_process_group(pid).await;
-
-            if let Ok(pgid) = pgid_result {
-                // 使用 kill 命令终止整个进程组
-                let output = Command::new("kill")
-                    .args(["-9", &format!("-{}", pgid)])
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .output()
-                    .await
-                    .map_err(|e| format!("执行 kill 失败: {}", e))?;
-
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    if stderr.contains("No such process") {
-                        return Ok(());
-                    }
-                    return Err(format!("kill 失败: {}", stderr));
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.contains("No such process") {
+                    return Ok(());
                 }
-            } else {
-                // 如果无法获取进程组，直接 kill 主进程
-                let output = Command::new("kill")
-                    .args(["-9", &pid.to_string()])
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .output()
-                    .await
-                    .map_err(|e| format!("执行 kill 失败: {}", e))?;
-
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    if stderr.contains("No such process") {
-                        return Ok(());
-                    }
-                    return Err(format!("kill 失败: {}", stderr));
-                }
+                return Err(format!("kill 失败: {}", stderr));
             }
-
-            Ok(())
         }
 
-        #[cfg(not(any(windows, unix)))]
-        {
-            Err("不支持的操作系统".to_string())
-        }
+        Ok(())
     }
 
     #[cfg(unix)]

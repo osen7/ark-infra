@@ -54,7 +54,7 @@ ark-infra/
 
 **特点**：
 - 依赖 core 共享底座
-- 平台特定代码（Unix/Windows IPC）
+- Linux-only（Unix Socket IPC）
 - 可选的 Hub 连接（边缘上报）
 
 ### 3. 全局中控（Hub）

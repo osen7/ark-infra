@@ -6,10 +6,7 @@
 
 1. **Rust 工具链**（如果还没有安装）:
    ```bash
-   # Windows (使用 rustup)
-   # 访问 https://rustup.rs/
-   
-   # Linux/Mac
+   # Linux
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    ```
 
@@ -39,7 +36,7 @@ cargo run -p ark --release -- run --probe examples/ark-probe-nvml.py
 [ark] 启动事件总线...
 已检测到 X 个 GPU，开始监控...
 [ark] 探针已启动，状态图已初始化
-[ark] IPC 服务器已启动，监听端口 9090
+[ark] IPC 服务器已启动，监听 Unix Socket: /var/run/ark.sock
 [ark] 按 Ctrl+C 退出
 ```
 
