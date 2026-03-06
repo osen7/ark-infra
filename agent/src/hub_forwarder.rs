@@ -52,7 +52,7 @@ impl HubForwarder {
     }
 
     /// 连接到 Hub WebSocket 服务器
-    pub async fn connect(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn connect(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let url = url::Url::parse(&self.hub_url)?;
         let ws_stream = connect_async(url).await?.0;
         let (write, read) = ws_stream.split();
@@ -95,8 +95,19 @@ impl HubForwarder {
         Ok(())
     }
 
+    /// 断开现有连接并重连
+    pub async fn reconnect(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(handle) = self.command_listener_handle.take() {
+            handle.abort();
+        }
+        self.ws_sender = None;
+        self.connect().await
+    }
+
     /// 处理 Hub 下发的命令
-    async fn handle_command(cmd: HubCommand) -> Result<(), Box<dyn std::error::Error>> {
+    async fn handle_command(
+        cmd: HubCommand,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         match cmd.intent.as_str() {
             "fix" => {
                 println!(
@@ -237,7 +248,10 @@ impl HubForwarder {
     }
 
     /// 推送事件到 Hub
-    pub async fn forward_event(&self, mut event: Event) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn forward_event(
+        &self,
+        mut event: Event,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // 注入 node_id
         event.node_id = Some(self.node_id.clone());
 
