@@ -7,7 +7,7 @@
 use crate::exec::{ActionExecutor, ActionType};
 use ark_core::event::{Event, EventType};
 use futures_util::{SinkExt, StreamExt};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
@@ -17,6 +17,7 @@ type WsSender =
 
 const HUB_PROTOCOL_VERSION: &str = "1.0";
 const EVENT_SCHEMA_VERSION: &str = "1.0";
+const PENDING_EVENT_CAPACITY: usize = 1024;
 
 #[derive(serde::Serialize)]
 struct HubEventEnvelope {
@@ -36,6 +37,7 @@ pub struct HubForwarder {
     command_listener_handle: Option<tokio::task::JoinHandle<()>>,
     forwarded_bindings: Arc<RwLock<HashSet<(u32, String)>>>,
     last_util_values: Arc<RwLock<std::collections::HashMap<(u32, String), f64>>>,
+    pending_events: VecDeque<Event>,
 }
 
 impl HubForwarder {
@@ -48,6 +50,7 @@ impl HubForwarder {
             command_listener_handle: None,
             forwarded_bindings: Arc::new(RwLock::new(HashSet::new())),
             last_util_values: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            pending_events: VecDeque::with_capacity(PENDING_EVENT_CAPACITY),
         }
     }
 
@@ -283,11 +286,39 @@ impl HubForwarder {
         &mut self,
         event: Event,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if !self.pending_events.is_empty()
+            && self.flush_pending_events().await.is_err()
+            && self.reconnect().await.is_ok()
+        {
+            let _ = self.flush_pending_events().await;
+        }
+
         if self.forward_event(event.clone()).await.is_ok() {
             return Ok(());
         }
+
+        self.enqueue_pending_event(event);
         self.reconnect().await?;
-        self.forward_event(event).await
+        self.flush_pending_events().await
+    }
+
+    fn enqueue_pending_event(&mut self, event: Event) {
+        if self.pending_events.len() >= PENDING_EVENT_CAPACITY {
+            self.pending_events.pop_front();
+        }
+        self.pending_events.push_back(event);
+    }
+
+    async fn flush_pending_events(
+        &mut self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        while let Some(event) = self.pending_events.pop_front() {
+            if let Err(e) = self.forward_event(event.clone()).await {
+                self.pending_events.push_front(event);
+                return Err(e);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -316,7 +347,7 @@ pub fn get_node_id() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::HubForwarder;
+    use super::{HubForwarder, PENDING_EVENT_CAPACITY};
     use ark_core::event::{Event, EventType};
     use futures_util::StreamExt;
     use std::sync::{
@@ -326,6 +357,33 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
     use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+    fn test_event(ts: u64) -> Event {
+        Event {
+            ts,
+            event_type: EventType::ErrorNet,
+            entity_id: "eth0".to_string(),
+            job_id: Some("job-1".to_string()),
+            pid: Some(42),
+            value: "drop".to_string(),
+            node_id: None,
+        }
+    }
+
+    #[test]
+    fn pending_queue_is_bounded() {
+        let mut forwarder =
+            HubForwarder::new("ws://127.0.0.1:1".to_string(), "node-test".to_string());
+        for i in 0..(PENDING_EVENT_CAPACITY + 5) {
+            forwarder.enqueue_pending_event(test_event(i as u64));
+        }
+        assert_eq!(forwarder.pending_events.len(), PENDING_EVENT_CAPACITY);
+        assert_eq!(
+            forwarder.pending_events.front().map(|e| e.ts),
+            Some(5),
+            "oldest events should be evicted first"
+        );
+    }
 
     #[tokio::test]
     #[ignore = "requires local TCP socket permissions"]
@@ -374,15 +432,7 @@ mod tests {
         // 模拟连接状态丢失，触发重连路径。
         forwarder.ws_sender = None;
 
-        let event = Event {
-            ts: 1,
-            event_type: EventType::ErrorNet,
-            entity_id: "eth0".to_string(),
-            job_id: Some("job-1".to_string()),
-            pid: Some(42),
-            value: "drop".to_string(),
-            node_id: None,
-        };
+        let event = test_event(1);
 
         forwarder
             .forward_event_with_retry(event)
