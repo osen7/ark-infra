@@ -2,13 +2,15 @@
 //!
 //! 暴露 Ark Agent 的指标供 Prometheus 抓取
 
+use crate::hub_forwarder::ForwarderReliabilitySnapshot;
 use ark_core::event::EventType;
 use ark_core::graph::StateGraph;
 use prometheus::{
-    register_counter_vec, register_gauge_vec, register_histogram_vec, CounterVec, GaugeVec,
-    HistogramVec, TextEncoder,
+    register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec,
+    register_int_counter, CounterVec, Gauge, GaugeVec, HistogramVec, IntCounter, TextEncoder,
 };
 use std::sync::Arc;
+use std::sync::Mutex;
 
 /// Metrics 收集器
 pub struct MetricsCollector {
@@ -23,6 +25,11 @@ pub struct MetricsCollector {
     process_wait_time_seconds: HistogramVec,
     error_count: CounterVec,
     rule_matches_total: CounterVec,
+    forwarder_pending_queue_len: Gauge,
+    forwarder_retries_total: IntCounter,
+    forwarder_dropped_events_total: IntCounter,
+    forwarder_flush_failures_total: IntCounter,
+    forwarder_last_snapshot: Mutex<ForwarderReliabilitySnapshot>,
 }
 
 impl MetricsCollector {
@@ -73,6 +80,23 @@ impl MetricsCollector {
                 "规则匹配次数",
                 &["rule_name"]
             )?,
+            forwarder_pending_queue_len: register_gauge!(
+                "ark_forwarder_pending_queue_len",
+                "Hub 转发器待发送队列长度"
+            )?,
+            forwarder_retries_total: register_int_counter!(
+                "ark_forwarder_retries_total",
+                "Hub 转发重试次数"
+            )?,
+            forwarder_dropped_events_total: register_int_counter!(
+                "ark_forwarder_dropped_events_total",
+                "Hub 转发待发送队列溢出丢弃事件总数"
+            )?,
+            forwarder_flush_failures_total: register_int_counter!(
+                "ark_forwarder_flush_failures_total",
+                "Hub 转发待发送队列补发失败总数"
+            )?,
+            forwarder_last_snapshot: Mutex::new(ForwarderReliabilitySnapshot::default()),
         })
     }
 
@@ -188,6 +212,34 @@ impl MetricsCollector {
         self.rule_matches_total
             .with_label_values(&[rule_name])
             .inc();
+    }
+
+    /// 更新 Hub 转发可靠性指标（按增量更新 counter）
+    pub fn update_forwarder_reliability(&self, snapshot: ForwarderReliabilitySnapshot) {
+        self.forwarder_pending_queue_len
+            .set(snapshot.pending_queue_len as f64);
+
+        if let Ok(mut last) = self.forwarder_last_snapshot.lock() {
+            let retry_delta = snapshot.retries_total.saturating_sub(last.retries_total);
+            let dropped_delta = snapshot
+                .dropped_events_total
+                .saturating_sub(last.dropped_events_total);
+            let flush_fail_delta = snapshot
+                .flush_failures_total
+                .saturating_sub(last.flush_failures_total);
+
+            if retry_delta > 0 {
+                self.forwarder_retries_total.inc_by(retry_delta);
+            }
+            if dropped_delta > 0 {
+                self.forwarder_dropped_events_total.inc_by(dropped_delta);
+            }
+            if flush_fail_delta > 0 {
+                self.forwarder_flush_failures_total.inc_by(flush_fail_delta);
+            }
+
+            *last = snapshot;
+        }
     }
 
     /// 生成 Prometheus 格式的指标输出

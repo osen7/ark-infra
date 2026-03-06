@@ -19,6 +19,14 @@ const HUB_PROTOCOL_VERSION: &str = "1.0";
 const EVENT_SCHEMA_VERSION: &str = "1.0";
 const PENDING_EVENT_CAPACITY: usize = 1024;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ForwarderReliabilitySnapshot {
+    pub pending_queue_len: usize,
+    pub retries_total: u64,
+    pub dropped_events_total: u64,
+    pub flush_failures_total: u64,
+}
+
 #[derive(serde::Serialize)]
 struct HubEventEnvelope {
     kind: String,
@@ -38,6 +46,9 @@ pub struct HubForwarder {
     forwarded_bindings: Arc<RwLock<HashSet<(u32, String)>>>,
     last_util_values: Arc<RwLock<std::collections::HashMap<(u32, String), f64>>>,
     pending_events: VecDeque<Event>,
+    retries_total: u64,
+    dropped_events_total: u64,
+    flush_failures_total: u64,
 }
 
 impl HubForwarder {
@@ -51,6 +62,9 @@ impl HubForwarder {
             forwarded_bindings: Arc::new(RwLock::new(HashSet::new())),
             last_util_values: Arc::new(RwLock::new(std::collections::HashMap::new())),
             pending_events: VecDeque::with_capacity(PENDING_EVENT_CAPACITY),
+            retries_total: 0,
+            dropped_events_total: 0,
+            flush_failures_total: 0,
         }
     }
 
@@ -286,11 +300,12 @@ impl HubForwarder {
         &mut self,
         event: Event,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if !self.pending_events.is_empty()
-            && self.flush_pending_events().await.is_err()
-            && self.reconnect().await.is_ok()
-        {
-            let _ = self.flush_pending_events().await;
+        if !self.pending_events.is_empty() && self.flush_pending_events().await.is_err() {
+            self.flush_failures_total = self.flush_failures_total.saturating_add(1);
+            self.retries_total = self.retries_total.saturating_add(1);
+            if self.reconnect().await.is_ok() && self.flush_pending_events().await.is_err() {
+                self.flush_failures_total = self.flush_failures_total.saturating_add(1);
+            }
         }
 
         if self.forward_event(event.clone()).await.is_ok() {
@@ -298,13 +313,19 @@ impl HubForwarder {
         }
 
         self.enqueue_pending_event(event);
+        self.retries_total = self.retries_total.saturating_add(1);
         self.reconnect().await?;
-        self.flush_pending_events().await
+        if let Err(e) = self.flush_pending_events().await {
+            self.flush_failures_total = self.flush_failures_total.saturating_add(1);
+            return Err(e);
+        }
+        Ok(())
     }
 
     fn enqueue_pending_event(&mut self, event: Event) {
         if self.pending_events.len() >= PENDING_EVENT_CAPACITY {
             self.pending_events.pop_front();
+            self.dropped_events_total = self.dropped_events_total.saturating_add(1);
         }
         self.pending_events.push_back(event);
     }
@@ -319,6 +340,15 @@ impl HubForwarder {
             }
         }
         Ok(())
+    }
+
+    pub fn reliability_snapshot(&self) -> ForwarderReliabilitySnapshot {
+        ForwarderReliabilitySnapshot {
+            pending_queue_len: self.pending_events.len(),
+            retries_total: self.retries_total,
+            dropped_events_total: self.dropped_events_total,
+            flush_failures_total: self.flush_failures_total,
+        }
     }
 }
 

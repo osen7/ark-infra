@@ -390,6 +390,7 @@ async fn run_daemon(
                                     eprintln!("[ark] 推送事件到 Hub 失败(含重试): {}", e);
                                 }
                             }
+                            metrics.update_forwarder_reliability(forwarder.reliability_snapshot());
                         }
                     }
                     None => {
