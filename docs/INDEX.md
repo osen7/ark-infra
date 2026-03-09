@@ -20,6 +20,7 @@
 - [EBPF_NETWORK_PROBE.md](EBPF_NETWORK_PROBE.md) - eBPF 网络探针说明
 - [EVENT_PROTOCOL.md](EVENT_PROTOCOL.md) - agent↔hub 事件协议与版本策略
 - [API_SCHEMAS.md](API_SCHEMAS.md) - Hub HTTP API JSON 字段契约
+- [PERFORMANCE.md](PERFORMANCE.md) - 性能基线与压测入口
 
 ## 生态与维护
 

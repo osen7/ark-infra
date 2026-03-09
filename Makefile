@@ -1,4 +1,4 @@
-.PHONY: test lint fmt demo helm-lint helm-template
+.PHONY: test lint fmt demo stress helm-lint helm-template
 
 test:
 	cargo test --workspace
@@ -11,6 +11,9 @@ fmt:
 
 demo:
 	./scripts/run-demo.sh
+
+stress:
+	cargo run -p ark-core --bin graph-stress -- --events 100000 --resources 8 --pids 1024
 
 helm-lint:
 	helm lint charts/ark-infra
