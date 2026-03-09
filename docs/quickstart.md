@@ -131,6 +131,9 @@ cargo run -p ark --release -- doctor --check-rules-validate --check-fixtures
 
 # 根因解释输出稳定 JSON（适合接入 UI 或归档）
 cargo run -p ark --release -- why 1234 --json
+
+# Hub 结构化健康检查（包含 WAL 状态）
+curl -s http://localhost:8081/api/v1/health
 ```
 
 当传入 `--hub http://<host>:8081` 时，`doctor` 还会检查：

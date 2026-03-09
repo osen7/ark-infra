@@ -75,3 +75,15 @@ jobs:
           cargo run -p ark -- doctor --json >/dev/null
           WHY_JSON="$(cargo run -q -p ark -- why 999999 --json 2>/dev/null || true)"
           echo "${WHY_JSON}" | grep -E '"schema_version"[[:space:]]*:[[:space:]]*1' >/dev/null
+          cargo run -q -p ark-hub -- --http-listen 127.0.0.1:18081 --ws-listen 127.0.0.1:18080 --rules-dir rules --wal-path /tmp/ark-ci-hub.wal.jsonl >/tmp/ark-ci-hub.log 2>&1 &
+          HUB_PID=$!
+          trap 'kill ${HUB_PID} 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl --noproxy '*' -fsS http://127.0.0.1:18081/api/v1/health >/tmp/ark-ci-hub-health.json; then
+              break
+            fi
+            sleep 1
+          done
+          grep -E '"status"[[:space:]]*:[[:space:]]*"ok"' /tmp/ark-ci-hub-health.json >/dev/null
+          grep -E '"wal"' /tmp/ark-ci-hub-health.json >/dev/null
+          grep -E '"active_exists"' /tmp/ark-ci-hub-health.json >/dev/null
