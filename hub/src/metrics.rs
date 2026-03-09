@@ -31,6 +31,9 @@ pub struct HubMetricsCollector {
     rules_legacy_migratable_total: Gauge,
     rules_legacy_unsupported_total: Gauge,
     wal_replayed_total: Counter,
+    wal_replay_corrupted_lines_total: Counter,
+    wal_replay_dedup_dropped_total: Counter,
+    wal_replay_process_failed_total: Counter,
     wal_append_errors_total: Counter,
     wal_rotations_total: Counter,
     wal_size_bytes: Gauge,
@@ -102,6 +105,18 @@ impl HubMetricsCollector {
             wal_replayed_total: register_counter!(
                 "ark_hub_wal_replayed_total",
                 "Hub 启动时从 WAL 成功回放的事件总数"
+            )?,
+            wal_replay_corrupted_lines_total: register_counter!(
+                "ark_hub_wal_replay_corrupted_lines_total",
+                "Hub 启动回放 WAL 时遇到的损坏行总数"
+            )?,
+            wal_replay_dedup_dropped_total: register_counter!(
+                "ark_hub_wal_replay_dedup_dropped_total",
+                "Hub 启动回放 WAL 时被去重窗口丢弃的事件总数"
+            )?,
+            wal_replay_process_failed_total: register_counter!(
+                "ark_hub_wal_replay_process_failed_total",
+                "Hub 启动回放 WAL 时处理失败事件总数"
             )?,
             wal_append_errors_total: register_counter!(
                 "ark_hub_wal_append_errors_total",
@@ -215,6 +230,24 @@ impl HubMetricsCollector {
     pub fn record_wal_replayed(&self, count: usize) {
         if count > 0 {
             self.wal_replayed_total.inc_by(count as f64);
+        }
+    }
+
+    pub fn record_wal_replay_corrupted_lines(&self, count: usize) {
+        if count > 0 {
+            self.wal_replay_corrupted_lines_total.inc_by(count as f64);
+        }
+    }
+
+    pub fn record_wal_replay_dedup_dropped(&self, count: usize) {
+        if count > 0 {
+            self.wal_replay_dedup_dropped_total.inc_by(count as f64);
+        }
+    }
+
+    pub fn record_wal_replay_process_failed(&self, count: usize) {
+        if count > 0 {
+            self.wal_replay_process_failed_total.inc_by(count as f64);
         }
     }
 

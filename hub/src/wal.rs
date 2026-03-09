@@ -21,6 +21,14 @@ pub struct WalAppendResult {
     pub size_bytes: u64,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WalReplayStats {
+    pub replayed: usize,
+    pub corrupted_lines: usize,
+    pub dedup_dropped: usize,
+    pub process_failed: usize,
+}
+
 pub async fn open_wal_writer(
     path: &str,
     wal_max_mb: u64,
@@ -46,14 +54,14 @@ pub async fn replay_wal(
     event_buffer_size: usize,
     dedup_store: DedupStore,
     dedup_window_ms: u64,
-) -> Result<usize, Box<dyn std::error::Error>> {
+) -> Result<WalReplayStats, Box<dyn std::error::Error>> {
     if !Path::new(path).exists() {
-        return Ok(0);
+        return Ok(WalReplayStats::default());
     }
 
     let file = File::open(path).await?;
     let mut reader = BufReader::new(file).lines();
-    let mut replayed = 0usize;
+    let mut stats = WalReplayStats::default();
 
     while let Some(line) = reader.next_line().await? {
         let trimmed = line.trim();
@@ -63,16 +71,19 @@ pub async fn replay_wal(
         let event: Event = match serde_json::from_str(trimmed) {
             Ok(event) => event,
             Err(e) => {
+                stats.corrupted_lines += 1;
                 eprintln!("[hub] 跳过损坏 WAL 行: {}", e);
                 continue;
             }
         };
 
         if !accept_event_with_dedup(&event, &dedup_store, dedup_window_ms).await {
+            stats.dedup_dropped += 1;
             continue;
         }
 
         if let Err(e) = graph.process_event(&event).await {
+            stats.process_failed += 1;
             eprintln!("[hub] 回放事件失败: {}", e);
             continue;
         }
@@ -84,10 +95,10 @@ pub async fn replay_wal(
             }
             buf.push_back(event);
         }
-        replayed += 1;
+        stats.replayed += 1;
     }
 
-    Ok(replayed)
+    Ok(stats)
 }
 
 pub async fn append_wal_event(
@@ -140,4 +151,67 @@ async fn rotate_wal(state: &mut WalState) -> Result<(), std::io::Error> {
         .open(&active_path)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{replay_wal, WalReplayStats};
+    use crate::dedup::DedupStore;
+    use ark_core::event::{Event, EventType};
+    use ark_core::graph::StateGraph;
+    use std::collections::{HashMap, VecDeque};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use tokio::sync::{Mutex, RwLock};
+
+    #[tokio::test]
+    async fn replay_wal_tracks_corrupted_and_replayed_lines() {
+        let test_file = unique_temp_file("wal-replay-stats");
+        let valid = Event {
+            ts: 1_741_234_000_000,
+            event_type: EventType::TransportDrop,
+            entity_id: "mlx5_0".to_string(),
+            job_id: Some("job-1".to_string()),
+            pid: Some(1234),
+            value: "1".to_string(),
+            node_id: Some("node-a".to_string()),
+        };
+        let mut payload = serde_json::to_string(&valid).expect("serialize valid event");
+        payload.push('\n');
+        payload.push_str("{{bad json line}}\n");
+        tokio::fs::write(&test_file, payload)
+            .await
+            .expect("write wal test file");
+
+        let graph = Arc::new(StateGraph::new());
+        let event_buffer = Arc::new(RwLock::new(VecDeque::with_capacity(16)));
+        let dedup_store: DedupStore = Arc::new(Mutex::new(HashMap::new()));
+        let stats: WalReplayStats = replay_wal(
+            test_file.to_str().expect("wal path string"),
+            Arc::clone(&graph),
+            Arc::clone(&event_buffer),
+            16,
+            dedup_store,
+            30_000,
+        )
+        .await
+        .expect("replay wal");
+
+        assert_eq!(stats.replayed, 1);
+        assert_eq!(stats.corrupted_lines, 1);
+        assert_eq!(stats.dedup_dropped, 0);
+        assert_eq!(stats.process_failed, 0);
+
+        tokio::fs::remove_file(&test_file)
+            .await
+            .expect("remove wal test file");
+    }
+
+    fn unique_temp_file(prefix: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{}-{}.jsonl", prefix, nanos))
+    }
 }

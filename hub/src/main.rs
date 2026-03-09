@@ -100,7 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dedup_store: DedupStore = Arc::new(Mutex::new(HashMap::new()));
 
     // 启动时回放历史 WAL，恢复内存状态图与窗口缓存
-    let replayed = replay_wal(
+    let replay_stats = replay_wal(
         &wal_path,
         Arc::clone(&global_graph),
         Arc::clone(&event_buffer),
@@ -109,10 +109,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dedup_window_ms,
     )
     .await?;
-    if replayed > 0 {
-        println!("♻️  已从 WAL 回放事件: {} 条", replayed);
+    if replay_stats.replayed > 0 {
+        println!("♻️  已从 WAL 回放事件: {} 条", replay_stats.replayed);
     }
-    metrics.record_wal_replayed(replayed);
+    if replay_stats.corrupted_lines > 0
+        || replay_stats.dedup_dropped > 0
+        || replay_stats.process_failed > 0
+    {
+        eprintln!(
+            "[hub] WAL 回放统计: corrupted_lines={}, dedup_dropped={}, process_failed={}",
+            replay_stats.corrupted_lines, replay_stats.dedup_dropped, replay_stats.process_failed
+        );
+    }
+    metrics.record_wal_replayed(replay_stats.replayed);
+    metrics.record_wal_replay_corrupted_lines(replay_stats.corrupted_lines);
+    metrics.record_wal_replay_dedup_dropped(replay_stats.dedup_dropped);
+    metrics.record_wal_replay_process_failed(replay_stats.process_failed);
 
     // 打开 WAL 追加写句柄
     let wal_writer = Some(open_wal_writer(&wal_path, cli.wal_max_mb).await?);
