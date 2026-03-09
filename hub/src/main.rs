@@ -112,9 +112,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if replayed > 0 {
         println!("♻️  已从 WAL 回放事件: {} 条", replayed);
     }
+    metrics.record_wal_replayed(replayed);
 
     // 打开 WAL 追加写句柄
     let wal_writer = Some(open_wal_writer(&wal_path, cli.wal_max_mb).await?);
+    if let Ok(meta) = tokio::fs::metadata(&wal_path).await {
+        metrics.update_wal_size_bytes(meta.len());
+    }
 
     // 创建 K8s 控制器（如果启用）
     let k8s_controller = if cli.enable_k8s_controller {
@@ -332,8 +336,17 @@ async fn handle_connection(
                                 buf.push_back(event.clone());
                             }
                             if let Some(writer) = wal_writer.as_ref() {
-                                if let Err(e) = append_wal_event(writer, &event).await {
-                                    eprintln!("[hub] 写入 WAL 失败: {}", e);
+                                match append_wal_event(writer, &event).await {
+                                    Ok(append_result) => {
+                                        if append_result.rotated {
+                                            metrics.record_wal_rotation();
+                                        }
+                                        metrics.update_wal_size_bytes(append_result.size_bytes);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[hub] 写入 WAL 失败: {}", e);
+                                        metrics.record_wal_append_error();
+                                    }
                                 }
                             }
 

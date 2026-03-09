@@ -6,8 +6,8 @@
 use ark_core::graph::StateGraph;
 use ark_core::rules::RuleLoadStats;
 use prometheus::{
-    register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec, CounterVec,
-    Gauge, GaugeVec, HistogramVec, TextEncoder,
+    register_counter, register_counter_vec, register_gauge, register_gauge_vec,
+    register_histogram_vec, Counter, CounterVec, Gauge, GaugeVec, HistogramVec, TextEncoder,
 };
 use std::sync::Arc;
 
@@ -30,6 +30,10 @@ pub struct HubMetricsCollector {
     rules_legacy_total: Gauge,
     rules_legacy_migratable_total: Gauge,
     rules_legacy_unsupported_total: Gauge,
+    wal_replayed_total: Counter,
+    wal_append_errors_total: Counter,
+    wal_rotations_total: Counter,
+    wal_size_bytes: Gauge,
 }
 
 impl HubMetricsCollector {
@@ -94,6 +98,22 @@ impl HubMetricsCollector {
             rules_legacy_unsupported_total: register_gauge!(
                 "ark_rules_legacy_unsupported_total",
                 "legacy 语法中不可迁移规则数"
+            )?,
+            wal_replayed_total: register_counter!(
+                "ark_hub_wal_replayed_total",
+                "Hub 启动时从 WAL 成功回放的事件总数"
+            )?,
+            wal_append_errors_total: register_counter!(
+                "ark_hub_wal_append_errors_total",
+                "Hub 追加写 WAL 失败总数"
+            )?,
+            wal_rotations_total: register_counter!(
+                "ark_hub_wal_rotations_total",
+                "Hub WAL 轮转总次数"
+            )?,
+            wal_size_bytes: register_gauge!(
+                "ark_hub_wal_size_bytes",
+                "Hub 当前 WAL 文件大小（字节）"
             )?,
         })
     }
@@ -190,6 +210,24 @@ impl HubMetricsCollector {
                 .with_label_values(&[reason])
                 .inc_by(*count as f64);
         }
+    }
+
+    pub fn record_wal_replayed(&self, count: usize) {
+        if count > 0 {
+            self.wal_replayed_total.inc_by(count as f64);
+        }
+    }
+
+    pub fn record_wal_append_error(&self) {
+        self.wal_append_errors_total.inc();
+    }
+
+    pub fn record_wal_rotation(&self) {
+        self.wal_rotations_total.inc();
+    }
+
+    pub fn update_wal_size_bytes(&self, size_bytes: u64) {
+        self.wal_size_bytes.set(size_bytes as f64);
     }
 
     /// 生成 Prometheus 格式的指标输出

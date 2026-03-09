@@ -16,6 +16,11 @@ pub struct WalState {
 
 pub type WalWriter = Arc<Mutex<WalState>>;
 
+pub struct WalAppendResult {
+    pub rotated: bool,
+    pub size_bytes: u64,
+}
+
 pub async fn open_wal_writer(
     path: &str,
     wal_max_mb: u64,
@@ -85,16 +90,26 @@ pub async fn replay_wal(
     Ok(replayed)
 }
 
-pub async fn append_wal_event(writer: &WalWriter, event: &Event) -> Result<(), std::io::Error> {
+pub async fn append_wal_event(
+    writer: &WalWriter,
+    event: &Event,
+) -> Result<WalAppendResult, std::io::Error> {
     let mut state = writer.lock().await;
     let mut line = serde_json::to_vec(event)
         .map_err(|e| std::io::Error::other(format!("serialize wal event: {}", e)))?;
     line.push(b'\n');
+    let mut rotated = false;
     let current_size = state.file.metadata().await?.len();
     if state.max_bytes > 0 && current_size.saturating_add(line.len() as u64) > state.max_bytes {
         rotate_wal(&mut state).await?;
+        rotated = true;
     }
-    state.file.write_all(&line).await
+    state.file.write_all(&line).await?;
+    let size_bytes = state.file.metadata().await?.len();
+    Ok(WalAppendResult {
+        rotated,
+        size_bytes,
+    })
 }
 
 async fn ensure_parent_dir(path: &str) -> Result<(), std::io::Error> {
