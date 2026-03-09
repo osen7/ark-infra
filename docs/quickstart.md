@@ -136,6 +136,7 @@ cargo run -p ark --release -- why 1234 --json
 当传入 `--hub http://<host>:8081` 时，`doctor` 还会检查：
 - `GET /api/v1/health` 可达性
 - Hub WAL 健康状态（active/rotated 文件存在与大小）
+- WAL 是否长期未更新（默认阈值：24 小时）
 
 `ark doctor --strict` 退出码约定：
 

@@ -333,6 +333,14 @@ async fn hub_connectivity_checks(opts: &DoctorOptions) -> DoctorSection {
 }
 
 fn evaluate_hub_wal_health(raw_json: &str) -> CheckItem {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    evaluate_hub_wal_health_at(raw_json, now_ms)
+}
+
+fn evaluate_hub_wal_health_at(raw_json: &str, now_ms: u64) -> CheckItem {
     let value: serde_json::Value = match serde_json::from_str(raw_json) {
         Ok(v) => v,
         Err(e) => {
@@ -371,6 +379,10 @@ fn evaluate_hub_wal_health(raw_json: &str) -> CheckItem {
         .get("rotated_size_bytes")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    let active_mtime_ms = wal
+        .get("active_last_modified_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
 
     if !active_exists {
         return CheckItem {
@@ -378,6 +390,21 @@ fn evaluate_hub_wal_health(raw_json: &str) -> CheckItem {
             status: CheckStatus::Warn,
             detail: "active WAL file not found".to_string(),
             suggestion: Some("check hub --wal-path and writable volume mount".to_string()),
+        };
+    }
+
+    let stale_after_ms = 24 * 60 * 60 * 1000;
+    if active_mtime_ms > 0 && now_ms.saturating_sub(active_mtime_ms) > stale_after_ms {
+        return CheckItem {
+            name: "hub wal".to_string(),
+            status: CheckStatus::Warn,
+            detail: format!(
+                "active WAL stale (>24h), active={}B, rotated={}B",
+                active_size, rotated_size
+            ),
+            suggestion: Some(
+                "verify agent->hub event flow and WAL volume mount/permission".to_string(),
+            ),
         };
     }
 
@@ -1146,7 +1173,9 @@ fn parse_kernel_version(raw: &str) -> Option<(u64, u64)> {
 mod tests {
     #[cfg(target_os = "linux")]
     use super::parse_kernel_version;
-    use super::{derive_ws_endpoint, evaluate_hub_wal_health, CheckStatus};
+    use super::{
+        derive_ws_endpoint, evaluate_hub_wal_health, evaluate_hub_wal_health_at, CheckStatus,
+    };
 
     #[test]
     #[cfg(target_os = "linux")]
@@ -1175,11 +1204,12 @@ mod tests {
           "wal":{
             "active_exists":true,
             "active_size_bytes":4096,
+            "active_last_modified_ms":1700000000000,
             "rotated_exists":true,
             "rotated_size_bytes":8192
           }
         }"#;
-        let item = evaluate_hub_wal_health(payload);
+        let item = evaluate_hub_wal_health_at(payload, 1700000000100);
         assert_eq!(item.status, CheckStatus::Ok);
         assert!(item.detail.contains("active=4096B"));
     }
@@ -1191,11 +1221,29 @@ mod tests {
           "wal":{
             "active_exists":false,
             "active_size_bytes":0,
+            "active_last_modified_ms":0,
             "rotated_exists":false,
             "rotated_size_bytes":0
           }
         }"#;
         let item = evaluate_hub_wal_health(payload);
         assert_eq!(item.status, CheckStatus::Warn);
+    }
+
+    #[test]
+    fn evaluate_hub_wal_health_warns_when_stale() {
+        let payload = r#"{
+          "status":"ok",
+          "wal":{
+            "active_exists":true,
+            "active_size_bytes":128,
+            "active_last_modified_ms":1700000000000,
+            "rotated_exists":true,
+            "rotated_size_bytes":512
+          }
+        }"#;
+        let item = evaluate_hub_wal_health_at(payload, 1700000000000 + (25 * 60 * 60 * 1000));
+        assert_eq!(item.status, CheckStatus::Warn);
+        assert!(item.detail.contains("stale"));
     }
 }
