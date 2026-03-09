@@ -220,6 +220,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 启动 HTTP API 服务器
     let http_listen = cli.http_listen.clone();
+    let http_wal_path = wal_path.clone();
     let http_handle = {
         let graph = Arc::clone(&global_graph);
         let conns = Arc::clone(&connections);
@@ -229,15 +230,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let k8s_ctrl = k8s_controller.clone();
         tokio::spawn(async move {
             // 创建 API 路由（包含 metrics 端点）
-            let api = create_api_routes(
+            let api = create_api_routes(ApiContext {
                 graph,
-                conns,
+                connections: conns,
                 metrics,
                 rules,
                 event_buffer,
-                k8s_ctrl,
-                cli.allow_execute,
-            );
+                k8s_controller: k8s_ctrl,
+                allow_execute: cli.allow_execute,
+                wal_path: http_wal_path,
+            });
             let bind_addr: SocketAddr = match http_listen.parse() {
                 Ok(addr) => addr,
                 Err(e) => {
@@ -603,8 +605,8 @@ fn with_allow_execute(
     warp::any().map(move || allow_execute)
 }
 
-/// 创建 HTTP API 路由
-fn create_api_routes(
+#[derive(Clone)]
+struct ApiContext {
     graph: Arc<StateGraph>,
     connections: Arc<DashMap<String, mpsc::UnboundedSender<Message>>>,
     metrics: Arc<HubMetricsCollector>,
@@ -612,14 +614,21 @@ fn create_api_routes(
     event_buffer: Arc<RwLock<VecDeque<Event>>>,
     k8s_controller: Option<Arc<K8sController>>,
     allow_execute: bool,
+    wal_path: String,
+}
+
+/// 创建 HTTP API 路由
+fn create_api_routes(
+    ctx: ApiContext,
 ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    let graph_filter = with_graph(graph.clone());
-    let conns_filter = with_connections(connections.clone());
-    let metrics_filter = with_metrics(metrics.clone());
-    let rules_filter = with_rules(rules.clone());
-    let event_buffer_filter = with_event_buffer(event_buffer.clone());
-    let k8s_filter = with_k8s_controller(k8s_controller.clone());
-    let allow_execute_filter = with_allow_execute(allow_execute);
+    let graph_filter = with_graph(ctx.graph.clone());
+    let conns_filter = with_connections(ctx.connections.clone());
+    let metrics_filter = with_metrics(ctx.metrics.clone());
+    let rules_filter = with_rules(ctx.rules.clone());
+    let event_buffer_filter = with_event_buffer(ctx.event_buffer.clone());
+    let k8s_filter = with_k8s_controller(ctx.k8s_controller.clone());
+    let allow_execute_filter = with_allow_execute(ctx.allow_execute);
+    let wal_path_filter = warp::any().map(move || ctx.wal_path.clone());
 
     // GET /metrics - Prometheus Metrics 端点
     let metrics_route = warp::path("metrics")
@@ -689,13 +698,65 @@ fn create_api_routes(
             })))
         });
 
+    // GET /api/v1/health
+    let health_route = warp::path!("api" / "v1" / "health")
+        .and(warp::get())
+        .and(graph_filter.clone())
+        .and(conns_filter.clone())
+        .and(wal_path_filter.clone())
+        .and(rules_filter.clone())
+        .and_then(
+            |graph: Arc<StateGraph>,
+             conns: Arc<DashMap<String, mpsc::UnboundedSender<Message>>>,
+             wal_path: String,
+             rules: Arc<RuleEngine>| async move {
+                let nodes = graph.get_nodes_async().await;
+                let edges = graph.get_all_edges_async().await;
+                let active_meta = tokio::fs::metadata(&wal_path).await.ok();
+                let rotated_path = format!("{}.1", wal_path);
+                let rotated_meta = tokio::fs::metadata(&rotated_path).await.ok();
+                let active_mtime_ms = active_meta
+                    .as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as u64);
+
+                let stats = rules.load_stats();
+                Ok::<_, warp::Rejection>(warp::reply::json(&json!({
+                    "status": "ok",
+                    "timestamp_ms": now_ms(),
+                    "graph": {
+                        "nodes_total": nodes.len(),
+                        "edges_total": edges.len(),
+                    },
+                    "connections": {
+                        "agents_connected": conns.len(),
+                    },
+                    "rules": {
+                        "loaded": stats.loaded_rules,
+                        "skipped": stats.skipped_rules,
+                        "legacy": stats.legacy_total,
+                    },
+                    "wal": {
+                        "path": wal_path,
+                        "active_exists": active_meta.is_some(),
+                        "active_size_bytes": active_meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                        "active_last_modified_ms": active_mtime_ms,
+                        "rotated_path": rotated_path,
+                        "rotated_exists": rotated_meta.is_some(),
+                        "rotated_size_bytes": rotated_meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                    }
+                })))
+            },
+        );
+
     // GET /api/v1/diagnose?job_id=xxx&window_s=60&execute=false
     let diagnose_route = warp::path!("api" / "v1" / "diagnose")
         .and(warp::query::<std::collections::HashMap<String, String>>())
         .and(graph_filter.clone())
         .and(conns_filter.clone())
         .and(rules_filter)
-        .and(event_buffer_filter)
+        .and(event_buffer_filter.clone())
         .and(k8s_filter)
         .and(allow_execute_filter)
         .and_then(
@@ -823,7 +884,7 @@ fn create_api_routes(
     // GET /api/v1/preflight?node_id=node-a&window_s=120
     let preflight_route = warp::path!("api" / "v1" / "preflight")
         .and(warp::query::<std::collections::HashMap<String, String>>())
-        .and(with_event_buffer(event_buffer.clone()))
+        .and(event_buffer_filter.clone())
         .and_then(
             |params: std::collections::HashMap<String, String>,
              event_buffer: Arc<RwLock<VecDeque<Event>>>| async move {
@@ -876,7 +937,7 @@ fn create_api_routes(
     // GET /api/v1/training_slow?job_id=job-xx&window_s=120
     let training_slow_route = warp::path!("api" / "v1" / "training_slow")
         .and(warp::query::<std::collections::HashMap<String, String>>())
-        .and(with_event_buffer(event_buffer.clone()))
+        .and(event_buffer_filter.clone())
         .and_then(
             |params: std::collections::HashMap<String, String>,
              event_buffer: Arc<RwLock<VecDeque<Event>>>| async move {
@@ -942,12 +1003,20 @@ fn create_api_routes(
         });
 
     metrics_route
+        .or(health_route)
         .or(why_route)
         .or(ps_route)
         .or(diagnose_route)
         .or(preflight_route)
         .or(training_slow_route)
         .or(fix_route)
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 /// 集群级根因分析：根据 job_id 查找所有相关进程并分析根因

@@ -272,9 +272,123 @@ async fn hub_connectivity_checks(opts: &DoctorOptions) -> DoctorSection {
         });
     }
 
+    let health_endpoint = format!("{}/api/v1/health", hub.trim_end_matches('/'));
+    match reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(client) => {
+            let started = Instant::now();
+            match client.get(&health_endpoint).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    let elapsed_ms = started.elapsed().as_millis();
+                    match resp.text().await {
+                        Ok(body) => {
+                            checks.push(CheckItem {
+                                name: "hub health".to_string(),
+                                status: CheckStatus::Ok,
+                                detail: format!("{} ({}ms)", health_endpoint, elapsed_ms),
+                                suggestion: None,
+                            });
+                            checks.push(evaluate_hub_wal_health(&body));
+                        }
+                        Err(e) => checks.push(CheckItem {
+                            name: "hub health".to_string(),
+                            status: CheckStatus::Warn,
+                            detail: format!("{} response read failed ({})", health_endpoint, e),
+                            suggestion: Some(
+                                "verify hub health response serialization".to_string(),
+                            ),
+                        }),
+                    }
+                }
+                Ok(resp) => checks.push(CheckItem {
+                    name: "hub health".to_string(),
+                    status: CheckStatus::Warn,
+                    detail: format!("{} (HTTP {})", health_endpoint, resp.status().as_u16()),
+                    suggestion: Some(
+                        "upgrade hub to a version exposing /api/v1/health".to_string(),
+                    ),
+                }),
+                Err(e) => checks.push(CheckItem {
+                    name: "hub health".to_string(),
+                    status: CheckStatus::Warn,
+                    detail: format!("{} ({})", health_endpoint, e),
+                    suggestion: Some("verify hub HTTP API is reachable".to_string()),
+                }),
+            }
+        }
+        Err(e) => checks.push(CheckItem {
+            name: "hub health".to_string(),
+            status: CheckStatus::Warn,
+            detail: format!("failed to build HTTP client: {}", e),
+            suggestion: None,
+        }),
+    }
+
     DoctorSection {
         name: "Hub Connectivity".to_string(),
         checks,
+    }
+}
+
+fn evaluate_hub_wal_health(raw_json: &str) -> CheckItem {
+    let value: serde_json::Value = match serde_json::from_str(raw_json) {
+        Ok(v) => v,
+        Err(e) => {
+            return CheckItem {
+                name: "hub wal".to_string(),
+                status: CheckStatus::Warn,
+                detail: format!("health payload parse failed: {}", e),
+                suggestion: Some("ensure /api/v1/health returns valid JSON".to_string()),
+            }
+        }
+    };
+
+    let wal = value.get("wal").and_then(|v| v.as_object());
+    let Some(wal) = wal else {
+        return CheckItem {
+            name: "hub wal".to_string(),
+            status: CheckStatus::Warn,
+            detail: "health payload missing wal section".to_string(),
+            suggestion: Some("upgrade hub to include wal health fields".to_string()),
+        };
+    };
+
+    let active_exists = wal
+        .get("active_exists")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let active_size = wal
+        .get("active_size_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let rotated_exists = wal
+        .get("rotated_exists")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let rotated_size = wal
+        .get("rotated_size_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    if !active_exists {
+        return CheckItem {
+            name: "hub wal".to_string(),
+            status: CheckStatus::Warn,
+            detail: "active WAL file not found".to_string(),
+            suggestion: Some("check hub --wal-path and writable volume mount".to_string()),
+        };
+    }
+
+    CheckItem {
+        name: "hub wal".to_string(),
+        status: CheckStatus::Ok,
+        detail: format!(
+            "active={}B, rotated_exists={}, rotated={}B",
+            active_size, rotated_exists, rotated_size
+        ),
+        suggestion: None,
     }
 }
 
@@ -1030,9 +1144,9 @@ fn parse_kernel_version(raw: &str) -> Option<(u64, u64)> {
 
 #[cfg(test)]
 mod tests {
-    use super::derive_ws_endpoint;
     #[cfg(target_os = "linux")]
     use super::parse_kernel_version;
+    use super::{derive_ws_endpoint, evaluate_hub_wal_health, CheckStatus};
 
     #[test]
     #[cfg(target_os = "linux")]
@@ -1052,5 +1166,36 @@ mod tests {
             derive_ws_endpoint("https://hub.example.com:9443").as_deref(),
             Some("wss://hub.example.com:9443")
         );
+    }
+
+    #[test]
+    fn evaluate_hub_wal_health_handles_valid_payload() {
+        let payload = r#"{
+          "status":"ok",
+          "wal":{
+            "active_exists":true,
+            "active_size_bytes":4096,
+            "rotated_exists":true,
+            "rotated_size_bytes":8192
+          }
+        }"#;
+        let item = evaluate_hub_wal_health(payload);
+        assert_eq!(item.status, CheckStatus::Ok);
+        assert!(item.detail.contains("active=4096B"));
+    }
+
+    #[test]
+    fn evaluate_hub_wal_health_warns_when_missing_active_wal() {
+        let payload = r#"{
+          "status":"ok",
+          "wal":{
+            "active_exists":false,
+            "active_size_bytes":0,
+            "rotated_exists":false,
+            "rotated_size_bytes":0
+          }
+        }"#;
+        let item = evaluate_hub_wal_health(payload);
+        assert_eq!(item.status, CheckStatus::Warn);
     }
 }
