@@ -11,34 +11,25 @@ use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
-use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::fs::{self, File, OpenOptions};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use warp::{Filter, Reply};
+mod dedup;
 mod k8s_controller;
 mod metrics;
+mod wal;
+use dedup::{accept_event_with_dedup, DedupStore};
 use k8s_controller::{IrreversibleFault, K8sController};
 use metrics::HubMetricsCollector;
+use wal::{append_wal_event, open_wal_writer, replay_wal, WalWriter};
 
 const DEFAULT_RULES_DIR: &str = "rules";
 const DEFAULT_EVENT_BUFFER_SIZE: usize = 20_000;
 const DEFAULT_WAL_PATH: &str = "tmp/hub-events.wal.jsonl";
 const DEFAULT_DEDUP_WINDOW_S: u64 = 300;
-
-struct WalState {
-    file: File,
-    path: PathBuf,
-    max_bytes: u64,
-}
-
-type WalWriter = Arc<Mutex<WalState>>;
-type DedupStore = Arc<Mutex<HashMap<u64, u64>>>;
 
 #[derive(Parser)]
 #[command(name = "ark-hub")]
@@ -260,142 +251,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-
-async fn open_wal_writer(
-    path: &str,
-    wal_max_mb: u64,
-) -> Result<WalWriter, Box<dyn std::error::Error>> {
-    ensure_parent_dir(path).await?;
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .await?;
-    let max_bytes = wal_max_mb.saturating_mul(1024 * 1024);
-    Ok(Arc::new(Mutex::new(WalState {
-        file,
-        path: PathBuf::from(path),
-        max_bytes,
-    })))
-}
-
-async fn replay_wal(
-    path: &str,
-    graph: Arc<StateGraph>,
-    event_buffer: Arc<RwLock<VecDeque<Event>>>,
-    event_buffer_size: usize,
-    dedup_store: DedupStore,
-    dedup_window_ms: u64,
-) -> Result<usize, Box<dyn std::error::Error>> {
-    if !Path::new(path).exists() {
-        return Ok(0);
-    }
-
-    let file = File::open(path).await?;
-    let mut reader = BufReader::new(file).lines();
-    let mut replayed = 0usize;
-
-    while let Some(line) = reader.next_line().await? {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let event: Event = match serde_json::from_str(trimmed) {
-            Ok(event) => event,
-            Err(e) => {
-                eprintln!("[hub] 跳过损坏 WAL 行: {}", e);
-                continue;
-            }
-        };
-
-        if !accept_event_with_dedup(&event, &dedup_store, dedup_window_ms).await {
-            continue;
-        }
-
-        if let Err(e) = graph.process_event(&event).await {
-            eprintln!("[hub] 回放事件失败: {}", e);
-            continue;
-        }
-
-        {
-            let mut buf = event_buffer.write().await;
-            if buf.len() >= event_buffer_size {
-                buf.pop_front();
-            }
-            buf.push_back(event);
-        }
-        replayed += 1;
-    }
-
-    Ok(replayed)
-}
-
-async fn append_wal_event(writer: &WalWriter, event: &Event) -> Result<(), std::io::Error> {
-    let mut state = writer.lock().await;
-    let mut line = serde_json::to_vec(event)
-        .map_err(|e| std::io::Error::other(format!("serialize wal event: {}", e)))?;
-    line.push(b'\n');
-    let current_size = state.file.metadata().await?.len();
-    if state.max_bytes > 0 && current_size.saturating_add(line.len() as u64) > state.max_bytes {
-        rotate_wal(&mut state).await?;
-    }
-    state.file.write_all(&line).await
-}
-
-async fn ensure_parent_dir(path: &str) -> Result<(), std::io::Error> {
-    let p = PathBuf::from(path);
-    if let Some(parent) = p.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).await?;
-        }
-    }
-    Ok(())
-}
-
-async fn rotate_wal(state: &mut WalState) -> Result<(), std::io::Error> {
-    let active_path = state.path.clone();
-    let rotated_path = PathBuf::from(format!("{}.1", active_path.display()));
-
-    // 关闭旧句柄并轮转文件
-    state.file.flush().await?;
-    if rotated_path.exists() {
-        fs::remove_file(&rotated_path).await?;
-    }
-    if active_path.exists() {
-        fs::rename(&active_path, &rotated_path).await?;
-    }
-
-    state.file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&active_path)
-        .await?;
-    Ok(())
-}
-
-async fn accept_event_with_dedup(event: &Event, dedup_store: &DedupStore, window_ms: u64) -> bool {
-    let key = event_fingerprint(event);
-    let mut store = dedup_store.lock().await;
-    let cutoff = event.ts.saturating_sub(window_ms);
-    store.retain(|_, ts| *ts >= cutoff);
-    if store.contains_key(&key) {
-        return false;
-    }
-    store.insert(key, event.ts);
-    true
-}
-
-fn event_fingerprint(event: &Event) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    event.ts.hash(&mut hasher);
-    event.event_type.to_string().hash(&mut hasher);
-    event.entity_id.hash(&mut hasher);
-    event.job_id.hash(&mut hasher);
-    event.pid.hash(&mut hasher);
-    event.value.hash(&mut hasher);
-    event.node_id.hash(&mut hasher);
-    hasher.finish()
 }
 
 /// 处理单个 WebSocket 连接
