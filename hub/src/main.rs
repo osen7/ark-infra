@@ -79,6 +79,15 @@ struct Cli {
     /// 执行策略版本（用于审计和回放）
     #[arg(long, default_value = DEFAULT_POLICY_VERSION)]
     policy_version: String,
+    /// 启用 CRD Operator 循环（ArkRemediationRequest）
+    #[arg(long, default_value_t = false)]
+    enable_operator: bool,
+    /// Operator 监听的命名空间
+    #[arg(long, default_value = "ark-system")]
+    operator_namespace: String,
+    /// Operator 轮询间隔（秒）
+    #[arg(long, default_value_t = 15)]
+    operator_poll_s: u64,
 }
 
 #[tokio::main]
@@ -166,6 +175,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("ℹ️  Kubernetes 控制器未启用（使用 --enable-k8s-controller 启用）");
         None
     };
+
+    if cli.enable_operator {
+        if let Some(controller) = k8s_controller.clone() {
+            let ns = cli.operator_namespace.clone();
+            let poll = cli.operator_poll_s;
+            tokio::spawn(async move {
+                if let Err(e) = controller.run_operator_loop(ns, poll).await {
+                    eprintln!("[k8s-operator] loop exited with error: {}", e);
+                }
+            });
+            println!(
+                "✅ K8s Operator 已启用（namespace={}, poll={}s）",
+                cli.operator_namespace, cli.operator_poll_s
+            );
+        } else {
+            eprintln!(
+                "⚠️  --enable-operator 已设置，但 --enable-k8s-controller 未开启，Operator 不会运行"
+            );
+        }
+    }
 
     // 创建 WebSocket 连接管理器（node_id -> sender）
     let connections: Arc<DashMap<String, mpsc::UnboundedSender<Message>>> =

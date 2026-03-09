@@ -8,6 +8,7 @@ namespace: ark-system
 
 resources:
   - namespace.yaml
+  - crd-ark-remediation-request.yaml
   - rbac.yaml
   - hub-deployment.yaml
   - agent-daemonset.yaml

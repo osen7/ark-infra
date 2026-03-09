@@ -8,13 +8,13 @@
 
 use ark_core::event::{Event, EventType};
 use k8s_openapi::api::core::v1::{Node, Pod};
-use kube::api::{Patch, PatchParams};
+use kube::api::{ApiResource, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams};
 use kube::{Api, Client, Config};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio::time::{Duration, Instant};
+use tokio::time::{sleep, Duration, Instant};
 
 /// 不可逆故障类型
 #[allow(dead_code)]
@@ -197,6 +197,121 @@ impl K8sController {
         Ok(())
     }
 
+    /// 运行 Ark Remediation Operator 循环（CRD 驱动）
+    ///
+    /// 监听 `arkremediationrequests.ark.io/v1alpha1`：
+    /// - status.phase 为空 / Pending => 执行处置
+    /// - 执行中写入 Running
+    /// - 完成后写入 Succeeded / Failed
+    pub async fn run_operator_loop(
+        self: Arc<Self>,
+        namespace: String,
+        poll_interval_s: u64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.enabled {
+            eprintln!("[k8s-operator] 控制器未启用，跳过 operator loop");
+            return Ok(());
+        }
+        let gvk = GroupVersionKind::gvk("ark.io", "v1alpha1", "ArkRemediationRequest");
+        let ar = ApiResource::from_gvk(&gvk);
+        let req_api: Api<DynamicObject> =
+            Api::namespaced_with(self.client.clone(), &namespace, &ar);
+        let poll = Duration::from_secs(poll_interval_s.max(5));
+
+        println!(
+            "[k8s-operator] 启动 CRD 循环: namespace={}, poll={}s",
+            namespace,
+            poll.as_secs()
+        );
+
+        loop {
+            let lp = ListParams::default().limit(200);
+            let listed = req_api.list(&lp).await;
+            match listed {
+                Ok(list) => {
+                    for obj in list {
+                        let name = obj.metadata.name.clone().unwrap_or_default();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let phase = obj
+                            .data
+                            .get("status")
+                            .and_then(|v| v.get("phase"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Pending");
+                        if matches!(phase, "Succeeded" | "Failed" | "Running") {
+                            continue;
+                        }
+                        let Some(spec) = obj.data.get("spec") else {
+                            let _ = self
+                                .patch_request_status(
+                                    &req_api,
+                                    &name,
+                                    "Failed",
+                                    Some("missing spec".to_string()),
+                                )
+                                .await;
+                            continue;
+                        };
+                        let node_id = spec
+                            .get("nodeId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let action = spec
+                            .get("action")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("taint_evict")
+                            .to_string();
+                        let reason = spec
+                            .get("reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("operator request")
+                            .to_string();
+                        let dry_run = spec
+                            .get("dryRun")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        if node_id.is_empty() {
+                            let _ = self
+                                .patch_request_status(
+                                    &req_api,
+                                    &name,
+                                    "Failed",
+                                    Some("spec.nodeId is empty".to_string()),
+                                )
+                                .await;
+                            continue;
+                        }
+                        let _ = self
+                            .patch_request_status(&req_api, &name, "Running", None)
+                            .await;
+
+                        let (succeeded, message) = match self
+                            .execute_operator_action(&node_id, &action, &reason, dry_run)
+                            .await
+                        {
+                            Ok(msg) => (true, msg),
+                            Err(e) => (false, e.to_string()),
+                        };
+                        let _ = if succeeded {
+                            self.patch_request_status(&req_api, &name, "Succeeded", Some(message))
+                                .await
+                        } else {
+                            self.patch_request_status(&req_api, &name, "Failed", Some(message))
+                                .await
+                        };
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[k8s-operator] 列举 ArkRemediationRequest 失败: {}", e);
+                }
+            }
+            sleep(poll).await;
+        }
+    }
+
     /// 给 Node 打上 NoSchedule 污点
     async fn taint_node(
         &self,
@@ -260,6 +375,39 @@ impl K8sController {
         }
 
         Ok(())
+    }
+
+    async fn execute_operator_action(
+        &self,
+        node_id: &str,
+        action: &str,
+        reason: &str,
+        dry_run: bool,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        if dry_run {
+            println!(
+                "[k8s-operator] dry-run: node_id={}, action={}, reason={}",
+                node_id, action, reason
+            );
+            return Ok("dry-run".to_string());
+        }
+
+        let fault = IrreversibleFault::OtherHardwareFailure {
+            node_id: node_id.to_string(),
+            reason: reason.to_string(),
+        };
+        match action {
+            "taint_only" => {
+                self.taint_node(node_id, &fault).await?;
+                Ok("taint_only applied".to_string())
+            }
+            "taint_evict" => {
+                self.taint_node(node_id, &fault).await?;
+                let evicted = self.evict_pods_on_node(node_id).await?;
+                Ok(format!("taint+evict applied, evicted_pods={}", evicted))
+            }
+            other => Err(format!("unsupported action: {}", other).into()),
+        }
     }
 
     /// 驱逐节点上的所有 Pod
@@ -385,5 +533,26 @@ impl K8sController {
 
         // 如果都找不到，返回 node_id（让 K8s API 返回错误，而不是静默失败）
         Ok(node_id.to_string())
+    }
+
+    async fn patch_request_status(
+        &self,
+        req_api: &Api<DynamicObject>,
+        name: &str,
+        phase: &str,
+        message: Option<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let patch = json!({
+            "status": {
+                "phase": phase,
+                "message": message.unwrap_or_default(),
+                "lastTransitionTime": chrono::Utc::now().to_rfc3339(),
+            }
+        });
+        let pp = PatchParams::apply("ark-operator").force();
+        req_api
+            .patch_status(name, &pp, &Patch::Merge(&patch))
+            .await?;
+        Ok(())
     }
 }

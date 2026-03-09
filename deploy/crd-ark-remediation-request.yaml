@@ -1,0 +1,48 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: arkremediationrequests.ark.io
+spec:
+  group: ark.io
+  scope: Namespaced
+  names:
+    plural: arkremediationrequests
+    singular: arkremediationrequest
+    kind: ArkRemediationRequest
+    shortNames:
+      - arkr
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: ["nodeId"]
+              properties:
+                nodeId:
+                  type: string
+                action:
+                  type: string
+                  enum: ["taint_evict", "taint_only"]
+                  default: "taint_evict"
+                reason:
+                  type: string
+                dryRun:
+                  type: boolean
+                  default: false
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: ["Pending", "Running", "Succeeded", "Failed"]
+                message:
+                  type: string
+                lastTransitionTime:
+                  type: string

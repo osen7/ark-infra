@@ -66,6 +66,29 @@ kubectl logs -n ark-system -l app=ark-agent --tail=50
 - **健康检查**: HTTP GET `/api/v1/ps`
 - **K8s 控制器**: 默认启用（通过 `--enable-k8s-controller` 参数）
 - **动作执行门禁**: 默认强制 dry-run。仅当显式增加 `--allow-execute` 参数时，`/api/v1/diagnose?execute=true` 才会真正下发动作
+- **Operator 模式**: 支持 CRD `ArkRemediationRequest` 声明式处置（`--enable-operator`）
+
+### Operator（CRD 驱动）
+
+已内置 CRD：
+
+- `arkremediationrequests.ark.io/v1alpha1`
+
+用途：平台或 SRE 可通过提交 CR 的方式触发节点处置（taint/evict），由 Hub 控制器循环自动 reconcile。
+
+常用命令：
+
+```bash
+# 部署 CRD（kustomize 已包含）
+kubectl apply -f deploy/crd-ark-remediation-request.yaml
+
+# 提交一个 dry-run 示例请求
+kubectl apply -f deploy/operator-remediation-sample.yaml
+
+# 观察状态流转（Pending -> Running -> Succeeded/Failed）
+kubectl get arkremediationrequests -n ark-system
+kubectl get arkremediationrequests sample-node-remediation -n ark-system -o yaml
+```
 
 ### Agent DaemonSet
 

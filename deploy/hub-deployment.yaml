@@ -28,6 +28,12 @@ spec:
           - "--http-listen"
           - "0.0.0.0:8081"
           - "--enable-k8s-controller"
+          # 启用 CRD Operator（声明式处置请求）
+          - "--enable-operator"
+          - "--operator-namespace"
+          - "ark-system"
+          - "--operator-poll-s"
+          - "15"
           # 默认不添加 --allow-execute，保持 dry-run
           # - "--allow-execute"
         ports:

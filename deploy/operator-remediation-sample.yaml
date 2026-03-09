@@ -1,0 +1,10 @@
+apiVersion: ark.io/v1alpha1
+kind: ArkRemediationRequest
+metadata:
+  name: sample-node-remediation
+  namespace: ark-system
+spec:
+  nodeId: node-a
+  action: taint_evict
+  reason: manual-operator-trigger
+  dryRun: true
