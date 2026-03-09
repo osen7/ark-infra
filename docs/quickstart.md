@@ -54,6 +54,7 @@ cargo run -p ark --release -- run --hub-url ws://localhost:8080 --probe examples
 # 终端 3：集群查询
 cargo run -p ark --release -- cluster ps --hub http://localhost:8081
 curl 'http://localhost:8081/api/v1/diagnose?job_id=job-1234&window_s=120'
+curl 'http://localhost:8081/api/v1/incidents?window_s=300&limit=20'
 ```
 
 成功判定：
@@ -117,7 +118,13 @@ kubectl auth can-i create pods/eviction --as=system:serviceaccount:ark-system:ar
 Hub 默认强制 dry-run。只有显式开启 `--allow-execute` 才会执行 `execute=true` 动作：
 
 ```bash
-cargo run -p ark-hub --release -- --enable-k8s-controller --allow-execute
+cargo run -p ark-hub --release -- \
+  --enable-k8s-controller \
+  --allow-execute \
+  --execute-max-actions 20 \
+  --execute-max-concurrency 16 \
+  --execute-cooldown-s 60 \
+  --policy-version v1
 ```
 
 ## 6. Doctor 与 Why 的推荐用法

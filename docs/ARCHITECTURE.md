@@ -246,6 +246,7 @@ actions:
 - `GET /api/v1/ps`: 查询所有活跃进程
 - `GET /api/v1/why?job_id=xxx`: 全局根因分析
 - `GET /api/v1/health`: Hub 运行健康与 WAL 状态
+- `GET /api/v1/incidents?window_s=300&limit=50`: 集群事故聚合视图
 - `POST /api/v1/fix`: 下发修复命令
 - `GET /metrics`: Prometheus Metrics 端点
 

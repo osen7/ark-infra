@@ -12,9 +12,10 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use warp::{Filter, Reply};
 mod dedup;
@@ -30,6 +31,10 @@ const DEFAULT_RULES_DIR: &str = "rules";
 const DEFAULT_EVENT_BUFFER_SIZE: usize = 20_000;
 const DEFAULT_WAL_PATH: &str = "tmp/hub-events.wal.jsonl";
 const DEFAULT_DEDUP_WINDOW_S: u64 = 300;
+const DEFAULT_EXECUTE_MAX_ACTIONS: usize = 20;
+const DEFAULT_EXECUTE_MAX_CONCURRENCY: usize = 16;
+const DEFAULT_EXECUTE_COOLDOWN_S: u64 = 60;
+const DEFAULT_POLICY_VERSION: &str = "v1";
 
 #[derive(Parser)]
 #[command(name = "ark-hub")]
@@ -62,6 +67,18 @@ struct Cli {
     /// 事件去重窗口（秒），用于抑制补发/回放重复事件
     #[arg(long, default_value_t = DEFAULT_DEDUP_WINDOW_S)]
     dedup_window_s: u64,
+    /// 每次 execute 请求最多执行的动作数量
+    #[arg(long, default_value_t = DEFAULT_EXECUTE_MAX_ACTIONS)]
+    execute_max_actions: usize,
+    /// execute 请求全局并发上限
+    #[arg(long, default_value_t = DEFAULT_EXECUTE_MAX_CONCURRENCY)]
+    execute_max_concurrency: usize,
+    /// 同一节点同一动作冷却窗口（秒）
+    #[arg(long, default_value_t = DEFAULT_EXECUTE_COOLDOWN_S)]
+    execute_cooldown_s: u64,
+    /// 执行策略版本（用于审计和回放）
+    #[arg(long, default_value = DEFAULT_POLICY_VERSION)]
+    policy_version: String,
 }
 
 #[tokio::main]
@@ -153,6 +170,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 创建 WebSocket 连接管理器（node_id -> sender）
     let connections: Arc<DashMap<String, mpsc::UnboundedSender<Message>>> =
         Arc::new(DashMap::new());
+    let execute_guard = Arc::new(ExecuteGuard::new(
+        cli.execute_max_concurrency,
+        cli.execute_cooldown_s,
+        cli.execute_max_actions,
+    ));
 
     // 启动 WebSocket 服务器
     let ws_listen = cli.ws_listen.clone();
@@ -228,6 +250,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let rules = Arc::clone(&rule_engine);
         let event_buffer = Arc::clone(&event_buffer);
         let k8s_ctrl = k8s_controller.clone();
+        let execute_guard = Arc::clone(&execute_guard);
+        let policy_version = cli.policy_version.clone();
         tokio::spawn(async move {
             // 创建 API 路由（包含 metrics 端点）
             let api = create_api_routes(ApiContext {
@@ -239,6 +263,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 k8s_controller: k8s_ctrl,
                 allow_execute: cli.allow_execute,
                 wal_path: http_wal_path,
+                execute_guard,
+                policy_version,
             });
             let bind_addr: SocketAddr = match http_listen.parse() {
                 Ok(addr) => addr,
@@ -615,6 +641,65 @@ struct ApiContext {
     k8s_controller: Option<Arc<K8sController>>,
     allow_execute: bool,
     wal_path: String,
+    execute_guard: Arc<ExecuteGuard>,
+    policy_version: String,
+}
+
+struct ExecuteGuard {
+    semaphore: Arc<Semaphore>,
+    cooldown_ms: u64,
+    max_actions: usize,
+    last_action_ms: Mutex<HashMap<String, u64>>,
+    request_seq: AtomicU64,
+}
+
+impl ExecuteGuard {
+    fn new(max_concurrency: usize, cooldown_s: u64, max_actions: usize) -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(max_concurrency.max(1))),
+            cooldown_ms: cooldown_s.saturating_mul(1000),
+            max_actions: max_actions.max(1),
+            last_action_ms: Mutex::new(HashMap::new()),
+            request_seq: AtomicU64::new(1),
+        }
+    }
+
+    fn next_request_id(&self) -> String {
+        let seq = self.request_seq.fetch_add(1, Ordering::Relaxed);
+        format!("req-{}-{}", now_ms(), seq)
+    }
+
+    fn max_actions(&self) -> usize {
+        self.max_actions
+    }
+
+    fn cooldown_s(&self) -> u64 {
+        self.cooldown_ms / 1000
+    }
+
+    fn try_acquire(&self) -> Result<OwnedSemaphorePermit, String> {
+        self.semaphore
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| "concurrency_limit_reached".to_string())
+    }
+
+    async fn check_and_record_cooldown(
+        &self,
+        node_id: &str,
+        action: &str,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let key = format!("{}::{}", node_id, action);
+        let mut guard = self.last_action_ms.lock().await;
+        if let Some(prev) = guard.get(&key) {
+            if now_ms.saturating_sub(*prev) < self.cooldown_ms {
+                return Err(format!("cooldown_active:{}s", self.cooldown_s()));
+            }
+        }
+        guard.insert(key, now_ms);
+        Ok(())
+    }
 }
 
 /// 创建 HTTP API 路由
@@ -629,6 +714,8 @@ fn create_api_routes(
     let k8s_filter = with_k8s_controller(ctx.k8s_controller.clone());
     let allow_execute_filter = with_allow_execute(ctx.allow_execute);
     let wal_path_filter = warp::any().map(move || ctx.wal_path.clone());
+    let execute_guard_filter = warp::any().map(move || ctx.execute_guard.clone());
+    let policy_version_filter = warp::any().map(move || ctx.policy_version.clone());
 
     // GET /metrics - Prometheus Metrics 端点
     let metrics_route = warp::path("metrics")
@@ -755,10 +842,12 @@ fn create_api_routes(
         .and(warp::query::<std::collections::HashMap<String, String>>())
         .and(graph_filter.clone())
         .and(conns_filter.clone())
-        .and(rules_filter)
+        .and(rules_filter.clone())
         .and(event_buffer_filter.clone())
-        .and(k8s_filter)
-        .and(allow_execute_filter)
+        .and(k8s_filter.clone())
+        .and(allow_execute_filter.clone())
+        .and(execute_guard_filter.clone())
+        .and(policy_version_filter.clone())
         .and_then(
             |params: std::collections::HashMap<String, String>,
              graph: Arc<StateGraph>,
@@ -766,7 +855,9 @@ fn create_api_routes(
              rules: Arc<RuleEngine>,
              event_buffer: Arc<RwLock<VecDeque<Event>>>,
              k8s_controller: Option<Arc<K8sController>>,
-             allow_execute: bool| async move {
+             allow_execute: bool,
+             execute_guard: Arc<ExecuteGuard>,
+             policy_version: String| async move {
                 let job_id = if let Some(job_id) = params.get("job_id") {
                     job_id.to_string()
                 } else {
@@ -787,11 +878,11 @@ fn create_api_routes(
                 let execute = allow_execute && execute_requested;
                 let dry_run = !execute;
 
-                let now_ms = std::time::SystemTime::now()
+                let now_ts = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as u64;
-                let cutoff = now_ms.saturating_sub(window_s * 1000);
+                let cutoff = now_ts.saturating_sub(window_s * 1000);
 
                 let candidate_events: Vec<Event> = {
                     let buf = event_buffer.read().await;
@@ -822,22 +913,69 @@ fn create_api_routes(
                     .await
                     .map_err(|_| warp::reject::reject())?;
                 let policy = build_policy_actions(&scenes, &processes, dry_run);
+                let request_id = execute_guard.next_request_id();
+                let max_actions = execute_guard.max_actions();
+                let trimmed_policy: Vec<PolicyAction> =
+                    policy.iter().take(max_actions).cloned().collect();
+                let truncated = policy.len() > trimmed_policy.len();
 
                 let mut execution_results = Vec::new();
+                let mut concurrency_limited = false;
                 if execute {
-                    for action in &policy {
-                        let result = send_fix_command(
-                            &conns,
-                            &action.node_id,
-                            action.target_pid,
-                            &action.action,
-                        );
+                    let permit = execute_guard.try_acquire();
+                    if let Ok(_permit) = permit {
+                        for action in &trimmed_policy {
+                            match execute_guard
+                                .check_and_record_cooldown(&action.node_id, &action.action, now_ts)
+                                .await
+                            {
+                                Ok(_) => {
+                                    let result = send_fix_command(
+                                        &conns,
+                                        &action.node_id,
+                                        action.target_pid,
+                                        &action.action,
+                                    );
+                                    let success = result.is_ok();
+                                    let error = result.err();
+                                    execution_results.push(json!({
+                                        "node_id": action.node_id,
+                                        "target_pid": action.target_pid,
+                                        "action": action.action,
+                                        "success": success,
+                                        "error": error
+                                    }));
+                                    println!(
+                                        "{}",
+                                        json!({
+                                            "type": "execution_audit",
+                                            "request_id": request_id,
+                                            "policy_version": policy_version,
+                                            "job_id": job_id,
+                                            "node_id": action.node_id,
+                                            "target_pid": action.target_pid,
+                                            "action": action.action,
+                                            "success": success,
+                                            "ts_ms": now_ms()
+                                        })
+                                    );
+                                }
+                                Err(e) => {
+                                    execution_results.push(json!({
+                                        "node_id": action.node_id,
+                                        "target_pid": action.target_pid,
+                                        "action": action.action,
+                                        "success": false,
+                                        "error": e
+                                    }));
+                                }
+                            }
+                        }
+                    } else {
+                        concurrency_limited = true;
                         execution_results.push(json!({
-                            "node_id": action.node_id,
-                            "target_pid": action.target_pid,
-                            "action": action.action,
-                            "success": result.is_ok(),
-                            "error": result.err()
+                            "success": false,
+                            "error": "concurrency_limit_reached"
                         }));
                     }
 
@@ -872,11 +1010,59 @@ fn create_api_routes(
                     "event_count": candidate_events.len(),
                     "matched_rules": matched_rules_json,
                     "processes": processes,
-                    "policy": policy,
+                    "policy": trimmed_policy,
                     "dry_run": dry_run,
                     "execute_requested": execute_requested,
                     "execute_enabled": allow_execute,
+                    "request_id": request_id,
+                    "policy_version": policy_version,
+                    "execution_guard": {
+                        "max_actions": max_actions,
+                        "cooldown_s": execute_guard.cooldown_s(),
+                        "truncated": truncated,
+                        "concurrency_limited": concurrency_limited,
+                    },
                     "execution": execution_results
+                })))
+            },
+        );
+
+    // GET /api/v1/incidents?window_s=300&limit=50
+    let incidents_route = warp::path!("api" / "v1" / "incidents")
+        .and(warp::query::<std::collections::HashMap<String, String>>())
+        .and(graph_filter.clone())
+        .and(rules_filter.clone())
+        .and(event_buffer_filter.clone())
+        .and_then(
+            |params: std::collections::HashMap<String, String>,
+             graph: Arc<StateGraph>,
+             rules: Arc<RuleEngine>,
+             event_buffer: Arc<RwLock<VecDeque<Event>>>| async move {
+                let window_s = params
+                    .get("window_s")
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(300)
+                    .clamp(30, 7200);
+                let limit = params
+                    .get("limit")
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(50)
+                    .clamp(1, 500);
+                let now = now_ms();
+                let cutoff = now.saturating_sub(window_s * 1000);
+
+                let candidate_events: Vec<Event> = {
+                    let buf = event_buffer.read().await;
+                    buf.iter().filter(|e| e.ts >= cutoff).cloned().collect()
+                };
+
+                let incidents = aggregate_incidents(&graph, &rules, &candidate_events, limit).await;
+                Ok::<_, warp::Rejection>(warp::reply::json(&json!({
+                    "status": "ok",
+                    "timestamp_ms": now,
+                    "window_s": window_s,
+                    "total_events": candidate_events.len(),
+                    "incidents": incidents
                 })))
             },
         );
@@ -1007,6 +1193,7 @@ fn create_api_routes(
         .or(why_route)
         .or(ps_route)
         .or(diagnose_route)
+        .or(incidents_route)
         .or(preflight_route)
         .or(training_slow_route)
         .or(fix_route)
@@ -1017,6 +1204,71 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+async fn aggregate_incidents(
+    graph: &Arc<StateGraph>,
+    rules: &Arc<RuleEngine>,
+    events: &[Event],
+    limit: usize,
+) -> Vec<serde_json::Value> {
+    let mut grouped: HashMap<String, Vec<Event>> = HashMap::new();
+    for event in events {
+        let key = event
+            .job_id
+            .clone()
+            .unwrap_or_else(|| "__no_job__".to_string());
+        grouped.entry(key).or_default().push(event.clone());
+    }
+
+    let mut incidents = Vec::new();
+    for (job_key, job_events) in grouped {
+        let matches = rules.match_rules(graph, &job_events).await;
+        if matches.is_empty() {
+            continue;
+        }
+        let mut nodes: Vec<String> = job_events
+            .iter()
+            .filter_map(|e| e.node_id.clone())
+            .collect();
+        nodes.sort();
+        nodes.dedup();
+
+        for matched in matches {
+            incidents.push(json!({
+                "scene": matched.scene,
+                "rule": matched.name,
+                "job_id": if job_key == "__no_job__" { serde_json::Value::Null } else { json!(job_key) },
+                "nodes": nodes,
+                "priority": matched.priority,
+                "severity": severity_from_priority(matched.priority),
+                "event_count": job_events.len(),
+                "root_cause": matched.root_cause_pattern.primary,
+            }));
+        }
+    }
+
+    incidents.sort_by(|a, b| {
+        let ap = a.get("priority").and_then(|v| v.as_u64()).unwrap_or(0);
+        let bp = b.get("priority").and_then(|v| v.as_u64()).unwrap_or(0);
+        let ac = a.get("event_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        let bc = b.get("event_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        bp.cmp(&ap).then(bc.cmp(&ac))
+    });
+    incidents.truncate(limit);
+    incidents
+}
+
+fn severity_from_priority(priority: u32) -> &'static str {
+    if priority >= 80 {
+        "critical"
+    } else if priority >= 50 {
+        "high"
+    } else if priority >= 20 {
+        "medium"
+    } else {
+        "low"
+    }
 }
 
 /// 集群级根因分析：根据 job_id 查找所有相关进程并分析根因
@@ -1089,7 +1341,7 @@ async fn cluster_why(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_policy_actions, classify_training_slow};
+    use super::{build_policy_actions, classify_training_slow, severity_from_priority};
     use ark_core::event::{Event, EventType};
     use serde_json::json;
 
@@ -1134,5 +1386,13 @@ mod tests {
         assert_eq!(actions[0].target_pid, 1234);
         assert_eq!(actions[0].action, "GracefulShutdown");
         assert!(actions[0].dry_run);
+    }
+
+    #[test]
+    fn severity_from_priority_maps_levels() {
+        assert_eq!(severity_from_priority(90), "critical");
+        assert_eq!(severity_from_priority(60), "high");
+        assert_eq!(severity_from_priority(30), "medium");
+        assert_eq!(severity_from_priority(10), "low");
     }
 }

@@ -19,6 +19,7 @@
 - [INCIDENT_CATALOG.md](INCIDENT_CATALOG.md) - AI Infra 事故 taxonomy 与 seed scenes
 - [EBPF_NETWORK_PROBE.md](EBPF_NETWORK_PROBE.md) - eBPF 网络探针说明
 - [EVENT_PROTOCOL.md](EVENT_PROTOCOL.md) - agent↔hub 事件协议与版本策略
+- [API_SCHEMAS.md](API_SCHEMAS.md) - Hub HTTP API JSON 字段契约
 
 ## 生态与维护
 
